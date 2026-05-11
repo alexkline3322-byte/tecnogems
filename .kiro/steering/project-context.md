@@ -68,7 +68,7 @@ tecnogems/
 | **A** | [#4](https://github.com/alexkline3322-byte/tecnogems/pull/4) | تنظيف هيكل المستودع: نقل الكود من `src/tecnogems_V49_STABLE/` إلى الجذر + حذف الـ zip القديم | — |
 | **B** | [#5](https://github.com/alexkline3322-byte/tecnogems/pull/5) | 2FA (TOTP) لحسابات الأدمن: pyotp + QR + 10 رموز استرداد + `admin_2fa_required` switch | `security_2fa.py` |
 | **C** | [#6](https://github.com/alexkline3322-byte/tecnogems/pull/6) | Tests + CI: 67 اختبار pytest + GitHub Actions (pytest + bandit + pip-audit) | `tests/`, `.github/workflows/ci.yml`, `V51_TESTS_CI.md` |
-| **D** | _pending_ | Sentry + JSON logs + `audit_log` table + `log_audit()` helper (11 admin actions مُنتقَلة) | `audit.py`, `V52_AUDIT_SENTRY.md` |
+| **D** | [#7](https://github.com/alexkline3322-byte/tecnogems/pull/7) | Sentry + JSON logs + `audit_log` table + `log_audit()` helper (11 admin actions مُنتقَلة) | `audit.py`, `V52_AUDIT_SENTRY.md` |
 
 **أبرز ما طُبِّق أمنياً:**
 - `secrets.token_urlsafe` لـ `order_code` و `deposit_code`
@@ -107,7 +107,7 @@ tecnogems/
 
 ### أولوية متوسطة
 
-- [x] ~~**D. Sentry + Structured Logging + Audit Table**~~ ✅ _pending PR_
+- [x] ~~**D. Sentry + Structured Logging + Audit Table**~~ ✅ [PR #7](https://github.com/alexkline3322-byte/tecnogems/pull/7)
   - ~~`sentry-sdk[flask]` + `SENTRY_DSN` + breadcrumbs + scrubbing hook~~
   - ~~JSON logs عبر `python-json-logger` (مفعَّل بـ `LOG_JSON=1`)~~
   - ~~جدول `audit_log(id, ts, action, actor_id, actor_email, target_type, target_id, ip, user_agent, old_value, new_value, metadata)`~~
