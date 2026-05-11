@@ -12,11 +12,37 @@ can import it and run process_order() / send_email_task() in isolation.
 from __future__ import annotations
 
 import os
+import re
 import smtplib
 import logging
 from email.mime.text import MIMEText
 
 log = logging.getLogger("tasks")
+
+
+# V50.2 MEDIUM (M12): sanitise supplier response messages before they land in
+# the DB. Suppliers occasionally echo our own API key back in errors, return
+# internal stack traces, or include raw HTML that would break admin views.
+_NOTE_MAX_LEN = 200
+_SUPPLIER_KEY_RE = re.compile(r"(key|token|apikey|api_key|authorization)\s*[:=]\s*[A-Za-z0-9._\-]+", re.IGNORECASE)
+_SUPPLIER_HTML_RE = re.compile(r"<[^>]{1,200}>")
+_SUPPLIER_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _sanitise_supplier_note(text) -> str:
+    """Strip credentials/HTML/control chars from supplier error text and
+    truncate to a safe length so admin screens (and users, via the orders
+    API) do not see raw response blobs."""
+    if text is None:
+        return ""
+    s = str(text)
+    s = _SUPPLIER_KEY_RE.sub(r"\1=[REDACTED]", s)
+    s = _SUPPLIER_HTML_RE.sub(" ", s)
+    s = _SUPPLIER_CTRL_RE.sub(" ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) > _NOTE_MAX_LEN:
+        s = s[: _NOTE_MAX_LEN - 1] + "…"
+    return s
 
 # ---- Redis / RQ optional bootstrap --------------------------------------
 _redis_url = os.getenv("REDIS_URL", "").strip()
@@ -124,6 +150,12 @@ def process_order(order_id: int):
 
         if "error" in res or res.get("success") is False:
             reason = res.get("error") or res.get("message") or str(res)
+            # V50.2 MEDIUM (M12): sanitise supplier error before storing in
+            # the order `note` column (which is later shown to admins and, via
+            # the orders API, reflected to users). Supplier responses can echo
+            # back our API key, internal IDs, or raw HTML payloads — redact
+            # anything that looks like a credential and truncate to 200 chars.
+            reason = _sanitise_supplier_note(reason)
             status = "rejected" if auto_refund else "manual_pending"
             note = f"Supplier error{' (auto-refund)' if auto_refund else ''}: {reason}"
             update_order(order_id, status, str(provider_order_id), note)
@@ -137,7 +169,10 @@ def process_order(order_id: int):
         log.exception("process_order error on order %s: %s", order_id, exc)
         try:
             from database import update_order as _update
-            _update(order_id, "manual_pending", None, f"Worker error: {exc}")
+            # V50.2 MEDIUM (M12): sanitise exception text — tracebacks can
+            # leak filesystem paths or library internals to the admin UI.
+            _update(order_id, "manual_pending", None,
+                    f"Worker error: {_sanitise_supplier_note(exc)}")
         except Exception:
             pass
 
