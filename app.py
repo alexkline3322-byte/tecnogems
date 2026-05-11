@@ -2807,4 +2807,6 @@ if __name__ == "__main__":
     _debug = os.getenv("FLASK_ENV", "development").lower() == "development"
     if os.getenv("FLASK_ENV") == "production":
         _debug = False
-    app.run(host="0.0.0.0", port=5000, debug=_debug)
+    # B104 suppressed: dev-only entry point guarded by __main__; production
+    # uses gunicorn via Procfile which binds only to $PORT.
+    app.run(host="0.0.0.0", port=5000, debug=_debug)  # nosec B104
