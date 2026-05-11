@@ -1,0 +1,40 @@
+{# V45: featured "Popular games" grid — static, NEONTOPUP-style. #}
+{# Used inside home.html. Data comes from `featured_games` (list of dicts). #}
+<section class="tg-popular-section" id="games">
+  <div class="tg-popular-head">
+    <div class="tg-popular-pill">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg>
+      {{ "Trending now" if is_en else "الأكثر رواجًا" }}
+    </div>
+    <h2 class="tg-popular-title">
+      {{ "Popular" if is_en else "الألعاب" }} <span class="accent">{{ "games" if is_en else "الأكثر طلبًا" }}</span>
+    </h2>
+    <p class="tg-popular-sub">{{ "Top up your favorite titles in just a few clicks." if is_en else "اشحن ألعابك المفضلة بنقرات قليلة." }}</p>
+  </div>
+
+  <div class="tg-popular-grid">
+    {% for g in featured_games %}
+      <a class="tg-popular-card"
+         href="{{ url_for('products', provider=g.provider, game_key=g.game_key) }}"
+         aria-label="{{ g.title }}">
+        <img class="tg-popular-card-img"
+             src="{{ url_for('static', filename=g.image) }}"
+             alt="{{ g.title }}"
+             loading="{% if loop.index <= 4 %}eager{% else %}lazy{% endif %}"
+             decoding="async">
+        <div class="tg-popular-badges">
+          {% if g.badge == 'hot' %}
+            <span class="tg-popular-badge hot">🔥 {{ "HOT" if is_en else "الأكثر طلبًا" }}</span>
+          {% else %}<span></span>{% endif %}
+          {% if g.discount %}
+            <span class="tg-popular-badge off">{{ g.discount }}</span>
+          {% endif %}
+        </div>
+        <div class="tg-popular-card-body">
+          <h3 class="tg-popular-card-title">{{ g.title }}</h3>
+          <p class="tg-popular-card-sub">{{ g.subtitle_en if is_en else g.subtitle_ar }}</p>
+        </div>
+      </a>
+    {% endfor %}
+  </div>
+</section>

@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>الألعاب المعروضة في الواجهة</h1>
+<p class="muted">
+  ابحث عن اللعبة ثم فعّلها لتظهر في واجهة الموقع. إذا كانت لعبة لديها أقسام مفعّلة للواجهة الرئيسية، ستظهر الأقسام بدل اللعبة الأصلية.
+</p>
+
+<form id="activeGamesForm" method="post" action="{{ url_for('admin_games') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"></form>
+
+<div class="card admin-card">
+  <div class="catalog-tools">
+    <label class="search-box">بحث سريع عن لعبة
+      <input id="gameSearch" type="search" placeholder="اكتب أول أحرف اللعبة مثل pubg / free / mobile legends..." autocomplete="off">
+    </label>
+    <button class="btn" type="button" id="showAllGames">إظهار جميع الألعاب</button>
+    <button class="btn" type="button" id="hideInactiveGames">إظهار المفعّلة فقط</button>
+  </div>
+
+  <div class="muted" id="gameCounter" style="margin:8px 0"></div>
+
+  <div class="admin-games-list searchable-games" id="adminGamesList">
+    {% for g in games %}
+      <div class="admin-game-row {% if g.active %}is-active{% else %}is-hidden-initial{% endif %}"
+           data-game-name="{{ (g.name ~ ' ' ~ g.game_key ~ ' ' ~ g.provider)|lower }}">
+        <label>
+          <input form="activeGamesForm" type="checkbox" name="active_game" value="{{ g.provider }}::{{ g.game_key }}" {% if g.active %}checked{% endif %}>
+          <b>{{ g.emoji or '🎮' }} {{ g.name }}</b>
+          <span class="muted">({{ g.provider }} / {{ g.game_key }}) • {{ g.product_count or 0 }} باقة</span>
+        </label>
+
+        <div class="row-actions" style="align-items:center">
+          {% if g.image_url %}
+            <img src="{{ g.image_url }}" alt="{{ g.name }}" style="width:46px;height:46px;object-fit:cover;border-radius:12px;border:1px solid rgba(255,255,255,.12)">
+          {% endif %}
+          <a class="btn small" href="{{ url_for('admin_game_products', provider=g.provider, game_key=g.game_key) }}">ترتيب الباقات</a>
+        </div>
+
+        <form method="post" action="{{ url_for('admin_game_image', provider=g.provider, game_key=g.game_key) }}" enctype="multipart/form-data" class="image-upload-inline" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="file" name="image" accept="image/*" style="max-width:180px">
+          <input type="text" name="image_url" placeholder="أو رابط صورة" style="max-width:220px">
+          <button class="btn small" type="submit">حفظ الصورة</button>
+        </form>
+      </div>
+    {% endfor %}
+  </div>
+
+  <button form="activeGamesForm" class="btn primary" type="submit">حفظ الألعاب المعروضة</button>
+</div>
+
+<h2>إضافة/تفعيل لعبة من المزود يدويًا</h2>
+<div class="card">
+  <form method="post" action="{{ url_for('admin_add_game') }}" class="grid-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>المزود
+      <select name="provider">
+        <option value="server1">المورد 1</option>
+        <option value="server2">المورد 2</option>
+      </select>
+    </label>
+    <label>معرّف اللعبة game_key
+      <input name="game_key" placeholder="freefire أو pubg_mobile" required>
+    </label>
+    <label>اسم اللعبة للواجهة
+      <input name="name" placeholder="Free Fire" required>
+    </label>
+    <label>رمز
+      <input name="emoji" placeholder="🔥">
+    </label>
+    <label>رابط صورة اختياري
+      <input name="image_url" placeholder="/static/img/freefire_cover.svg">
+    </label>
+    <button class="btn primary" type="submit">إضافة اللعبة وتفعيلها</button>
+  </form>
+</div>
+
+<script>
+(function(){
+  const search = document.getElementById('gameSearch');
+  const rows = Array.from(document.querySelectorAll('.admin-game-row'));
+  const counter = document.getElementById('gameCounter');
+  let mode = 'active';
+
+  function normalize(s){ return (s || '').toLowerCase().trim(); }
+
+  function render(){
+    const q = normalize(search.value);
+    let visible = 0;
+
+    rows.forEach(row => {
+      const input = row.querySelector('input[type="checkbox"][name="active_game"]');
+      const isActive = row.classList.contains('is-active') || (input && input.checked);
+      const hay = normalize(row.dataset.gameName);
+      let show = false;
+
+      if (q.length > 0) {
+        show = hay.includes(q);
+      } else if (mode === 'all') {
+        show = true;
+      } else {
+        show = isActive;
+      }
+
+      row.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+
+    if (q.length > 0) {
+      counter.textContent = `نتائج البحث: ${visible}`;
+    } else if (mode === 'all') {
+      counter.textContent = `يتم عرض جميع الألعاب: ${visible}`;
+    } else {
+      counter.textContent = `يتم عرض الألعاب المفعّلة فقط: ${visible}. اكتب في البحث لإظهار لعبة غير مفعّلة.`;
+    }
+  }
+
+  search.addEventListener('input', render);
+  document.getElementById('showAllGames').addEventListener('click', () => {
+    mode = 'all';
+    search.value = '';
+    render();
+  });
+  document.getElementById('hideInactiveGames').addEventListener('click', () => {
+    mode = 'active';
+    search.value = '';
+    render();
+  });
+  rows.forEach(row => {
+    const input = row.querySelector('input[type="checkbox"][name="active_game"]');
+    if (input) {
+      input.addEventListener('change', () => {
+        row.classList.toggle('is-active', input.checked);
+        render();
+      });
+    }
+  });
+
+  render();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<section style="padding:34px 0">
+  <div class="grid two">
+    <div class="card">
+      <h1>{{ t("wallet") }}</h1>
+      <p class="muted">{{ t("available_balance") }}</p>
+      <div class="price">{{ wallet_money(current_user.balance) }}</div>
+      <p>{{ t("support") }}: <strong>{{ support }}</strong></p>
+      <div class="links">
+        <a class="btn" href="{{ url_for('wallet_transactions') }}">{{ t("wallet_records") }}</a>
+      </div>
+    </div>
+
+    <div class="card" id="deposit-card">
+      <h2>شحن {{ t("wallet") }}</h2>
+      {% if methods %}
+      <form id="deposit" method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>{{ t("amount") }}</label>
+        <input name="amount" type="number" step="0.01" min="0.01" required>
+        <p class="muted">أدخل {{ t("amount") }} حسب عملة {{ t("payment_method") }} المختارة.</p>
+
+        <label>{{ t("payment_method") }}</label>
+        <select name="method_id" id="payment-method" required>
+          {% for m in methods %}
+            <option value="{{ m.id }}" data-currency="{{ m.currency }}" data-address="{{ m.address }}" data-instructions="{{ m.instructions }}">{{ m.emoji }} {{ m.name }} — {{ "ليرة سورية" if m.currency=="SYP" else "دولار" }}</option>
+          {% endfor %}
+        </select>
+
+        <div class="payment-method-card">
+          <strong>{{ t("method_currency") }}: <span id="method-currency"></span></strong>
+          <hr style="border-color:rgba(255,255,255,.08)">
+          <strong>{{ t("address") }}:</strong>
+          <div id="method-address" style="margin-top:8px;white-space:pre-wrap"></div>
+          <hr style="border-color:rgba(255,255,255,.08)">
+          <div id="method-instructions" class="muted" style="white-space:pre-wrap"></div>
+        </div>
+
+        <label>رقم العملية أو ملاحظة</label>
+        <textarea name="proof" rows="3" placeholder="ضع رقم العملية أو أي تفاصيل تثبت الدفع"></textarea>
+
+        <label>رفع صورة الإيصال</label>
+        <input class="file-input" type="file" name="proof_image" accept="image/*">
+
+        <button class="btn primary" type="submit" style="margin-top:18px;width:100%">{{ t("submit_deposit") }}</button>
+      </form>
+      {% else %}
+        <p class="muted">لا توجد طرق دفع مفعّلة حاليًا.</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<script>
+function updatePaymentInfo(){
+  const sel = document.getElementById('payment-method');
+  if(!sel) return;
+  const opt = sel.options[sel.selectedIndex];
+  const cur = opt.dataset.currency || 'USD';
+  document.getElementById('method-currency').innerText = cur === 'SYP' ? 'ليرة سورية' : 'دولار';
+  document.getElementById('method-address').innerText = opt.dataset.address || '';
+  document.getElementById('method-instructions').innerText = opt.dataset.instructions || '';
+}
+document.addEventListener('DOMContentLoaded', updatePaymentInfo);
+document.addEventListener('change', (e)=>{ if(e.target && e.target.id==='payment-method') updatePaymentInfo(); });
+</script>
+{% endblock %}

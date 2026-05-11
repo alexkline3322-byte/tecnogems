@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="form card">
+  <h2>الإعدادات العامة</h2>
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>حساب / رابط الدعم</label>
+    <input name="support_contact" value="{{ support }}" placeholder="@support أو رابط واتساب أو رقم هاتف" required>
+
+    <label>سعر صرف الدولار مقابل الليرة السورية</label>
+    <input name="usd_syp_rate" type="number" step="0.01" min="1" value="{{ usd_syp_rate }}" required>
+
+    <h2>إعدادات التسعير</h2>
+    <label>نظام التسعير</label>
+    <select name="pricing_mode">
+      <option value="usd" {% if selected_pricing_mode=="usd" %}selected{% endif %}>تسعير بالدولار</option>
+      <option value="auto_syp" {% if selected_pricing_mode=="auto_syp" %}selected{% endif %}>تسعير بالليرة حسب الدولار</option>
+    </select>
+
+    <label style="display:flex;gap:10px;align-items:center">
+      <input type="checkbox" name="manual_price_edit_enabled" value="1" {% if manual_price_edit_enabled_setting=="1" %}checked{% endif %} style="width:auto">
+      تفعيل الأسعار اليدوية بالليرة وتعديلها من واجهة اللعبة للأدمن
+    </label>
+    <p class="muted">عند التفعيل: السعر اليدوي بالليرة يتجاوز نظام التسعير الأساسي فقط للباقات التي وضعت لها سعرًا يدويًا. عند إلغاء التفعيل تعود كل الأسعار إلى نظام التسعير المختار أعلاه.</p>
+
+    <label>نسبة الربح العامة</label>
+    <input name="profit_margin" type="number" step="0.01" min="1" value="{{ profit_margin }}" required>
+    <p class="muted">مثال: 1.20 تعني إضافة 20% على تكلفة المزود. عند الحفظ سيتم تحديث أسعار كل الباقات حسب التكلفة.</p>
+
+    <label>طريقة عرض روابط الواجهة</label>
+    <select name="nav_mode">
+      <option value="menu" {% if selected_nav_mode=="menu" %}selected{% endif %}>زر قائمة منسدلة</option>
+      <option value="direct" {% if selected_nav_mode=="direct" %}selected{% endif %}>روابط مباشرة في الشريط</option>
+    </select>
+    <p class="muted">اختر روابط مباشرة إذا أردت أن تظهر: الرئيسية، طلباتي، سجل طلبات الرصيد، شحن المحفظة بدون زر القائمة.</p>
+
+    <label>تصميم الموقع</label>
+    <select name="site_theme">
+      <option value="theme-aurora" {% if selected_theme=="theme-aurora" %}selected{% endif %}>Aurora Gaming - عصري متدرج</option>
+      <option value="theme-minimal" {% if selected_theme=="theme-minimal" %}selected{% endif %}>Minimal Store - أبيض سريع</option>
+      <option value="theme-neon" {% if selected_theme=="theme-neon" %}selected{% endif %}>Neon Arcade - ألعاب نيون</option>
+      <option value="theme-lux" {% if selected_theme=="theme-lux" %}selected{% endif %}>Luxury Dark - داكن فاخر</option>
+    </select>
+
+    <label style="display:flex;gap:10px;align-items:center">
+      <input type="checkbox" name="show_groups_direct" value="1" {% if show_groups_direct_setting=="1" %}checked{% endif %} style="width:auto">
+      إظهار أقسام الألعاب مباشرة في الواجهة الرئيسية
+    </label>
+    <p class="muted">عند التفعيل ستظهر أقسام مثل: شدات / بطاقات مباشرة في الصفحة الرئيسية بدل الدخول إلى اللعبة أولًا.</p>
+
+    <label style="display:flex;gap:10px;align-items:center">
+      <input type="checkbox" name="auto_refund_on_failure" value="1" {% if auto_refund_on_failure_setting=="1" %}checked{% endif %} style="width:auto">
+      إعادة الرصيد تلقائيًا عند فشل المزود (بدلًا من نقل الطلب لقائمة اليدوي)
+    </label>
+
+
+
+
+    <label style="display:flex;gap:10px;align-items:center">
+      <input type="checkbox" name="manual_orders" value="1" {% if manual_orders=="1" %}checked{% endif %} style="width:auto">
+      جعل جميع طلبات الشراء يدوية
+    </label>
+
+    <label style="display:flex;gap:10px;align-items:center">
+      <input type="checkbox" name="email_verification_enabled" value="1" {% if email_verification_enabled=="1" %}checked{% endif %} style="width:auto">
+      تفعيل تأكيد البريد الإلكتروني للمستخدمين الجدد
+    </label>
+
+    <label style="display:flex;gap:10px;align-items:center">
+      <input type="checkbox" name="hide_phone_on_register" value="1" {% if hide_phone_on_register=="1" %}checked{% endif %} style="width:auto">
+      إخفاء طلب رقم الهاتف عند التسجيل
+    </label>
+    {% if email_is_configured %}
+      <p class="muted">إعدادات SMTP موجودة في ملف .env.</p>
+    {% else %}
+      <div class="alert warning">تنبيه: تفعيل البريد يحتاج إعدادات SMTP في ملف .env أولًا.</div>
+    {% endif %}
+
+    
+    <h2>وسائل التواصل الظاهرة للمستخدم</h2>
+    <label>رقم واتساب</label>
+    <input name="whatsapp_number" value="{{ whatsapp_number_setting or '' }}" placeholder="مثال: 963932607063 أو 12025550123">
+    <p class="muted">اكتب الرقم بدون علامة +. اتركه فارغًا لإخفاء زر واتساب.</p>
+
+    <label>اسم مستخدم تيليغرام</label>
+    <input name="telegram_username" value="{{ telegram_username_setting or '' }}" placeholder="مثال: TecnoGemsSupport">
+    <p class="muted">اكتب اليوزر بدون @. اتركه فارغًا لإخفاء زر تيليغرام.</p>
+
+<button class="btn primary" type="submit" style="margin-top:18px;width:100%">حفظ</button>
+  </form>
+</div>
+{% endblock %}
