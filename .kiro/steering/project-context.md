@@ -22,39 +22,32 @@ inclusion: always
 
 ## 2) البنية على القرص
 
-المستودع حالياً يحتوي على مجلد فرعي واحد هو الكود الفعلي:
+الكود موجود مباشرة في جذر المستودع (بعد تنظيف البند A):
 
 ```
 tecnogems/
-├── src/
-│   └── tecnogems_V49_STABLE/        ← كل الكود هنا
-│       ├── app.py                   ~2580 سطر  — routes + security + logic
-│       ├── database.py              ~1625 سطر  — SQLite schema + queries
-│       ├── providers.py              ~353 سطر  — G2Bulk + Shop2Topup
-│       ├── tasks.py                  ~230 سطر  — RQ + email + supplier sanitise
-│       ├── sync_products.py          ~360 سطر  — catalog sync
-│       ├── featured_games.py          ~90 سطر
-│       ├── wsgi.py                    ~35 سطر
-│       ├── worker_rq.py               ~22 سطر
-│       ├── requirements.txt
-│       ├── Procfile                  Heroku entrypoint
-│       ├── .env.example              متغيرات البيئة
-│       ├── .gitignore
-│       ├── routes/__init__.py        (placeholder — blueprint split مستقبلاً)
-│       ├── templates/                22 قالب Jinja2 (+ admin/)
-│       ├── static/css/               9 ملفات CSS (v35 → v44 neon)
-│       ├── static/js/                app.js + app.min.js
-│       ├── static/img/               صور الألعاب + icons
-│       ├── translations/             ar/ + en/ (LC_MESSAGES)
-│       ├── tools/gen_posters.py      توليد صور المنتجات
-│       └── V*.md / V*.txt            سجلات التغيير لكل إصدار
-│
-├── tecnogems_V49_STABLE(1).zip      ← أرشيف قديم، يجب حذفه
-└── .kiro/steering/                   ← هذا الملف
+├── app.py                   ~2580 سطر  — routes + security + logic
+├── database.py              ~1625 سطر  — SQLite schema + queries
+├── providers.py              ~353 سطر  — G2Bulk + Shop2Topup
+├── tasks.py                  ~230 سطر  — RQ + email + supplier sanitise
+├── sync_products.py          ~360 سطر  — catalog sync
+├── featured_games.py          ~90 سطر
+├── wsgi.py                    ~35 سطر
+├── worker_rq.py               ~22 سطر
+├── requirements.txt
+├── Procfile                  Heroku entrypoint
+├── .env.example              متغيرات البيئة
+├── .gitignore
+├── routes/__init__.py        (placeholder — blueprint split مستقبلاً)
+├── templates/                22 قالب Jinja2 (+ admin/)
+├── static/css/               9 ملفات CSS (v35 → v44 neon)
+├── static/js/                app.js + app.min.js
+├── static/img/               صور الألعاب + icons
+├── translations/             ar/ + en/ (LC_MESSAGES)
+├── tools/gen_posters.py      توليد صور المنتجات
+├── V*.md / V*.txt            سجلات التغيير لكل إصدار
+└── .kiro/steering/           ملفات steering
 ```
-
-**ملاحظة هيكل:** الكود في `src/tecnogems_V49_STABLE/` وليس في الجذر.
-تنظيف الهيكل (نقل الكود إلى الجذر + حذف الـ zip) ضمن البنود المتبقية.
 
 ## 3) تقنيات رئيسية
 
@@ -72,6 +65,7 @@ tecnogems/
 |--------|----|-----------|--------------|
 | **V50** | [#1](https://github.com/alexkline3322-byte/tecnogems/pull/1) | 14 إصلاح حرج/عالٍ (Critical + High) | `V50_SECURITY_FIXES.md` |
 | **V50.2** | [#2](https://github.com/alexkline3322-byte/tecnogems/pull/2) | 22 إصلاح متوسط/منخفض (Medium + Low) | `V50_2_SECURITY_FIXES.md` |
+| **A** | [#4](https://github.com/alexkline3322-byte/tecnogems/pull/4) | تنظيف هيكل المستودع: نقل الكود من `src/tecnogems_V49_STABLE/` إلى الجذر + حذف الـ zip القديم | — |
 
 **أبرز ما طُبِّق أمنياً:**
 - `secrets.token_urlsafe` لـ `order_code` و `deposit_code`
@@ -93,10 +87,9 @@ tecnogems/
 
 ### أولوية عالية
 
-- [ ] **A. تنظيف هيكل المستودع** *(PR صغير — 5 دقائق)*
-  - نقل محتويات `src/tecnogems_V49_STABLE/*` إلى جذر المستودع
-  - حذف `tecnogems_V49_STABLE(1).zip`
-  - تحديث `.gitignore` + `Procfile` + `README.md` إن لزم
+- [x] ~~**A. تنظيف هيكل المستودع**~~ ✅ [PR #4](https://github.com/alexkline3322-byte/tecnogems/pull/4)
+  - ~~نقل محتويات `src/tecnogems_V49_STABLE/*` إلى جذر المستودع~~
+  - ~~حذف `tecnogems_V49_STABLE(1).zip`~~
 
 - [ ] **B. 2FA لحسابات الأدمن** *(PR متوسط)*
   - `pyotp` + عمود `users.totp_secret`
@@ -185,7 +178,6 @@ MAIL_PASSWORD=...
 ## 8) تشغيل المشروع محلياً
 
 ```bash
-cd src/tecnogems_V49_STABLE
 cp .env.example .env
 # حرِّر .env وأضف SECRET_KEY
 
@@ -213,6 +205,6 @@ gunicorn -k gthread -w 2 --threads 4 -b 0.0.0.0:8000 wsgi:app
 
 ## 10) آخر تحديث 📌
 
-- **Commit:** `c13ee94` (PR #2 merged 2026-05-11)
-- **الحالة:** V50.2 مكتمل. الكود في الإنتاج جاهز أمنياً للبنود الـ 36 المُصنَّفة.
-- **التالي:** البند **A** (تنظيف الهيكل) أو **B** (2FA للأدمن).
+- **Commit:** (سيُحدَّث بعد دمج PR #4) — Branch: `chore/cleanup-repo-structure`
+- **الحالة:** V50.2 مكتمل + البند A (تنظيف الهيكل) في انتظار الدمج. الكود الآن في جذر المستودع مباشرة.
+- **التالي:** البند **B** (2FA للأدمن) أو **C** (Tests + CI).
