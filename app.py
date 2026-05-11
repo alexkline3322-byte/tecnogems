@@ -25,7 +25,16 @@ from database import (
     list_payment_methods, get_payment_method, update_payment_method,
     create_deposit, list_deposits, list_deposits_for_user, update_deposit, get_setting as _db_get_setting, set_setting as _db_set_setting,
     list_orders_for_auto_refresh, get_order_public,
-    list_all_games_for_admin, update_game_image, list_all_products_for_admin, update_product_sort_orders, update_profit_margin, seed_local_provider_catalog, attach_generated_posters
+    list_all_games_for_admin, update_game_image, list_all_products_for_admin, update_product_sort_orders, update_profit_margin, seed_local_provider_catalog, attach_generated_posters,
+    # V51 task B: admin 2FA persistence helpers
+    set_user_totp_secret, enable_user_totp, disable_user_totp, update_user_backup_codes,
+)
+
+# V51 task B: TOTP 2FA helpers for admin accounts (opt-in per admin)
+from security_2fa import (
+    generate_totp_secret, provisioning_uri, qr_svg,
+    verify_totp, generate_backup_codes,
+    serialize_backup_codes, deserialize_backup_codes, consume_backup_code,
 )
 
 # --- V35: in-memory settings cache (TTL 30s) to cut SQLite hits per request ---
@@ -1015,6 +1024,33 @@ def admin_required(fn):
         user = current_user()
         if not user or user["role"] != "admin":
             abort(403)
+        # V51 task B: enforce 2FA on admin routes.
+        #
+        # Policy (with a safe rollout):
+        #   - If the admin has 2FA enabled → they MUST pass the challenge
+        #     once per session (session["admin_2fa_verified"] = 1) before
+        #     any /admin/* route renders. This is unconditional.
+        #   - If the admin has NOT enabled 2FA and the global setting
+        #     `admin_2fa_required` is "1" → redirect to setup. This lets
+        #     ops flip the switch once every admin has enrolled.
+        #   - The 2FA endpoints themselves are whitelisted via
+        #     request.endpoint so setup/challenge/disable don't loop.
+        endpoint = (request.endpoint or "")
+        whitelist = {
+            "admin_2fa_setup", "admin_2fa_confirm",
+            "admin_2fa_challenge", "admin_2fa_disable",
+            "admin_2fa_regenerate_backup_codes",
+        }
+        if endpoint not in whitelist:
+            if int(user.get("totp_enabled") or 0) == 1:
+                if not session.get("admin_2fa_verified"):
+                    flash("يرجى إدخال رمز المصادقة الثنائية للمتابعة.", "warning")
+                    return redirect(url_for("admin_2fa_challenge",
+                                            next=request.full_path))
+            else:
+                if get_setting("admin_2fa_required", "0") == "1":
+                    flash("يجب تفعيل المصادقة الثنائية لحسابات الإدارة.", "warning")
+                    return redirect(url_for("admin_2fa_setup"))
         return fn(*args, **kwargs)
     return wrapper
 
@@ -1418,6 +1454,11 @@ def login():
             session.clear()
             session["user_id"] = user["id"]
             session.permanent = True
+            # V51 task B: for admins with 2FA enabled, mark the session
+            # as "password-only" (not yet 2FA-verified). admin_required
+            # will bounce them to /admin/2fa/challenge on first admin hit.
+            if user.get("role") == "admin" and int(user.get("totp_enabled") or 0) == 1:
+                session["admin_2fa_verified"] = False
             flash("تم تسجيل الدخول بنجاح", "success")
             return redirect(safe_next_url("home"))
         # V50 SECURITY (M10): log failed auth attempts for monitoring / fail2ban.
@@ -1702,6 +1743,198 @@ def api_validate_player():
 
 
 # Admin
+# --- V51 task B: admin 2FA (TOTP) endpoints ------------------------------
+# All of these require a logged-in admin, but MUST be excluded from the
+# 2FA gate in admin_required to avoid redirect loops. admin_required
+# already whitelists them by endpoint name.
+
+def _is_admin_user():
+    u = current_user()
+    return u if (u and u.get("role") == "admin") else None
+
+
+@app.route("/admin/2fa/setup", methods=["GET"])
+@login_required
+@admin_required
+@(limiter.limit("10 per minute") if limiter else (lambda f: f))
+def admin_2fa_setup():
+    """Show the QR + secret. If the admin already has 2FA enabled, we
+    redirect to the dashboard — regeneration goes through /disable first
+    to force the password + current-TOTP confirmation path."""
+    user = _is_admin_user()
+    if not user:
+        abort(403)
+    if int(user.get("totp_enabled") or 0) == 1:
+        flash("المصادقة الثنائية مفعّلة بالفعل. عطّلها أولاً لإعادة الإعداد.", "info")
+        return redirect(url_for("admin_dashboard"))
+    # Keep the secret stable while the admin is on the setup page so a
+    # page refresh does not invalidate the QR they already scanned.
+    secret = user.get("totp_secret")
+    if not secret:
+        secret = generate_totp_secret()
+        set_user_totp_secret(user["id"], secret)
+    uri = provisioning_uri(secret, user["email"])
+    svg = qr_svg(uri)
+    return render_template(
+        "admin/2fa_setup.html",
+        secret=secret,
+        qr_svg=svg,
+        seo_title="إعداد المصادقة الثنائية - TecnoGems",
+        seo_description="إعداد المصادقة الثنائية لحسابات الإدارة."
+    )
+
+
+@app.route("/admin/2fa/confirm", methods=["POST"])
+@login_required
+@admin_required
+@(limiter.limit("10 per minute") if limiter else (lambda f: f))
+def admin_2fa_confirm():
+    """Confirm setup: verify the user can read codes from the authenticator,
+    THEN flip totp_enabled and show the backup codes ONCE."""
+    user = _is_admin_user()
+    if not user:
+        abort(403)
+    if int(user.get("totp_enabled") or 0) == 1:
+        return redirect(url_for("admin_dashboard"))
+    secret = user.get("totp_secret")
+    code = (request.form.get("code") or "").strip()
+    if not secret or not verify_totp(secret, code):
+        log.warning("ADMIN_2FA_SETUP_FAIL user_id=%s email=%s ip=%s",
+                    user["id"], user["email"], request.remote_addr)
+        flash("الرمز غير صحيح أو انتهت صلاحيته. حاول مرة أخرى.", "danger")
+        return redirect(url_for("admin_2fa_setup"))
+    plain, hashed = generate_backup_codes()
+    enable_user_totp(user["id"], serialize_backup_codes(hashed))
+    session["admin_2fa_verified"] = True
+    log.warning("ADMIN_2FA_ENABLED user_id=%s email=%s ip=%s",
+                user["id"], user["email"], request.remote_addr)
+    # Show backup codes ONCE. No way to retrieve them later — only regenerate.
+    return render_template(
+        "admin/2fa_backup_codes.html",
+        backup_codes=plain,
+        just_enabled=True,
+        seo_title="رموز الاسترداد - TecnoGems",
+        seo_description="احفظ رموز الاسترداد في مكان آمن."
+    )
+
+
+@app.route("/admin/2fa/challenge", methods=["GET", "POST"])
+@login_required
+@(limiter.limit("15 per minute") if limiter else (lambda f: f))
+def admin_2fa_challenge():
+    """Post-login gate for admins who have 2FA enabled. Accepts either a
+    current TOTP code or a one-time backup code."""
+    user = current_user()
+    if not user or user.get("role") != "admin":
+        abort(403)
+    if int(user.get("totp_enabled") or 0) != 1:
+        # Nothing to challenge — skip to admin.
+        return redirect(url_for("admin_dashboard"))
+    if session.get("admin_2fa_verified"):
+        return redirect(safe_next_url("admin_dashboard"))
+
+    if request.method == "POST":
+        submitted = (request.form.get("code") or "").strip()
+        # 1) TOTP path
+        if verify_totp(user.get("totp_secret") or "", submitted):
+            session["admin_2fa_verified"] = True
+            log.info("ADMIN_2FA_PASS method=totp user_id=%s ip=%s",
+                     user["id"], request.remote_addr)
+            return redirect(safe_next_url("admin_dashboard"))
+        # 2) Backup code path (one-time)
+        codes = deserialize_backup_codes(user.get("totp_backup_codes"))
+        remaining = consume_backup_code(codes, submitted)
+        if remaining is not None:
+            update_user_backup_codes(user["id"], serialize_backup_codes(remaining))
+            session["admin_2fa_verified"] = True
+            log.warning(
+                "ADMIN_2FA_PASS method=backup_code user_id=%s email=%s "
+                "remaining=%d ip=%s",
+                user["id"], user["email"], len(remaining), request.remote_addr
+            )
+            if len(remaining) <= 2:
+                flash(f"تحذير: تبقى {len(remaining)} رموز استرداد فقط. أعد توليدها قريبًا.", "warning")
+            return redirect(safe_next_url("admin_dashboard"))
+        log.warning("ADMIN_2FA_FAIL user_id=%s email=%s ip=%s",
+                    user["id"], user["email"], request.remote_addr)
+        flash("الرمز غير صحيح. حاول مرة أخرى.", "danger")
+
+    return render_template(
+        "admin/2fa_challenge.html",
+        seo_title="المصادقة الثنائية - TecnoGems",
+        seo_description="أدخل رمز المصادقة الثنائية لمتابعة الدخول إلى لوحة الإدارة."
+    )
+
+
+@app.route("/admin/2fa/disable", methods=["POST"])
+@login_required
+@admin_required
+@(limiter.limit("5 per minute") if limiter else (lambda f: f))
+def admin_2fa_disable():
+    """Disable 2FA. Requires both the current password AND a valid TOTP
+    code (or backup code) — same strength as the challenge itself."""
+    user = _is_admin_user()
+    if not user or int(user.get("totp_enabled") or 0) != 1:
+        flash("المصادقة الثنائية غير مفعّلة.", "info")
+        return redirect(url_for("admin_dashboard"))
+    password = request.form.get("password", "")
+    code = (request.form.get("code") or "").strip()
+    if len(password) > MAX_PASSWORD_LEN or not password:
+        flash("كلمة المرور مطلوبة.", "danger")
+        return redirect(url_for("admin_dashboard"))
+    # Re-authenticate with the password
+    if not authenticate(user["email"], password):
+        log.warning("ADMIN_2FA_DISABLE_BAD_PW user_id=%s ip=%s",
+                    user["id"], request.remote_addr)
+        flash("كلمة المرور غير صحيحة.", "danger")
+        return redirect(url_for("admin_dashboard"))
+    # Require a valid second factor too (TOTP or backup code)
+    ok = verify_totp(user.get("totp_secret") or "", code)
+    if not ok:
+        codes = deserialize_backup_codes(user.get("totp_backup_codes"))
+        ok = consume_backup_code(codes, code) is not None
+    if not ok:
+        log.warning("ADMIN_2FA_DISABLE_BAD_CODE user_id=%s ip=%s",
+                    user["id"], request.remote_addr)
+        flash("رمز المصادقة غير صحيح.", "danger")
+        return redirect(url_for("admin_dashboard"))
+    disable_user_totp(user["id"])
+    session.pop("admin_2fa_verified", None)
+    log.warning("ADMIN_2FA_DISABLED user_id=%s email=%s ip=%s",
+                user["id"], user["email"], request.remote_addr)
+    flash("تم إلغاء المصادقة الثنائية. يُنصح بإعادة تفعيلها.", "warning")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.route("/admin/2fa/backup-codes/regenerate", methods=["POST"])
+@login_required
+@admin_required
+@(limiter.limit("3 per hour") if limiter else (lambda f: f))
+def admin_2fa_regenerate_backup_codes():
+    """Regenerate the 10 backup codes. Requires the current TOTP to be
+    valid so a stolen session alone cannot rotate them."""
+    user = _is_admin_user()
+    if not user or int(user.get("totp_enabled") or 0) != 1:
+        abort(404)
+    code = (request.form.get("code") or "").strip()
+    if not verify_totp(user.get("totp_secret") or "", code):
+        log.warning("ADMIN_2FA_REGEN_BAD_CODE user_id=%s ip=%s",
+                    user["id"], request.remote_addr)
+        flash("رمز المصادقة غير صحيح.", "danger")
+        return redirect(url_for("admin_dashboard"))
+    plain, hashed = generate_backup_codes()
+    update_user_backup_codes(user["id"], serialize_backup_codes(hashed))
+    log.warning("ADMIN_2FA_BACKUP_CODES_REGEN user_id=%s email=%s ip=%s",
+                user["id"], user["email"], request.remote_addr)
+    return render_template(
+        "admin/2fa_backup_codes.html",
+        backup_codes=plain,
+        just_enabled=False,
+        seo_title="رموز الاسترداد - TecnoGems",
+        seo_description="احفظ رموز الاسترداد في مكان آمن."
+    )
+
+
 @app.route("/admin")
 @login_required
 @admin_required

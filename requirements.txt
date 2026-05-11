@@ -12,3 +12,6 @@ Pillow==10.4.0
 # V45: durable background queue (optional — activated only if REDIS_URL is set)
 redis==5.0.8
 rq==1.16.2
+# V51 (task B): TOTP 2FA for admin accounts + QR code rendering
+pyotp==2.9.0
+qrcode==7.4.2

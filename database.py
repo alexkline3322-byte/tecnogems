@@ -231,7 +231,13 @@ def init_db():
         "ALTER TABLE users ADD COLUMN reset_token_created_at INTEGER",
         "ALTER TABLE users ADD COLUMN pending_email TEXT",
         "ALTER TABLE users ADD COLUMN pending_email_token TEXT",
-        "ALTER TABLE users ADD COLUMN pending_email_created_at INTEGER"
+        "ALTER TABLE users ADD COLUMN pending_email_created_at INTEGER",
+        # V51 task B: admin 2FA (TOTP + one-time backup codes).
+        # Columns are nullable — 2FA is opt-in per-admin and backfills cleanly.
+        "ALTER TABLE users ADD COLUMN totp_secret TEXT",
+        "ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN totp_backup_codes TEXT",
+        "ALTER TABLE users ADD COLUMN totp_enabled_at INTEGER"
     ]:
         try:
             cur.execute(sql)
@@ -477,6 +483,54 @@ def authenticate(email, password):
     if row and check_password_hash(row["password_hash"], password):
         return dict(row)
     return None
+
+
+# --- V51 task B: admin 2FA helpers ---------------------------------------
+def set_user_totp_secret(user_id, secret):
+    """Store a NEW (unverified) TOTP secret. Does not flip `totp_enabled`
+    — that happens via `enable_user_totp` once the first code is confirmed."""
+    conn = connect()
+    conn.execute(
+        "UPDATE users SET totp_secret=?, totp_enabled=0, totp_backup_codes=NULL, totp_enabled_at=NULL WHERE id=?",
+        (secret, int(user_id)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def enable_user_totp(user_id, backup_codes_json):
+    """Flip `totp_enabled` on (called after the user confirms a valid code).
+    `backup_codes_json` is produced by security_2fa.serialize_backup_codes."""
+    conn = connect()
+    conn.execute(
+        "UPDATE users SET totp_enabled=1, totp_backup_codes=?, totp_enabled_at=? WHERE id=?",
+        (backup_codes_json, int(time.time()), int(user_id)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def disable_user_totp(user_id):
+    """Wipe every 2FA column for the user (setup must restart from scratch)."""
+    conn = connect()
+    conn.execute(
+        "UPDATE users SET totp_secret=NULL, totp_enabled=0, totp_backup_codes=NULL, totp_enabled_at=NULL WHERE id=?",
+        (int(user_id),),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_user_backup_codes(user_id, backup_codes_json):
+    """Replace the stored backup-codes blob (used after consuming a code or
+    after regenerating)."""
+    conn = connect()
+    conn.execute(
+        "UPDATE users SET totp_backup_codes=? WHERE id=?",
+        (backup_codes_json, int(user_id)),
+    )
+    conn.commit()
+    conn.close()
 
 
 def get_user_by_email(email):
