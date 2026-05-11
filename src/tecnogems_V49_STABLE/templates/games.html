@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head" style="padding:28px 0 8px">
+  <div>
+    <div class="tg-pill small">{{ "Available now" if is_en else "متاح الآن" }}</div>
+    <h1>{{ ("Server 1" if is_en else "سيرفر 1") if provider=="server1" else ("Server 2" if is_en else "سيرفر 2") }}</h1>
+    <p class="muted">{{ "Pick a game to view its packages." if is_en else "اختر لعبتك لعرض الباقات المتاحة." }}</p>
+  </div>
+</section>
+
+{% if games %}
+  <div class="tg-search-wrap">
+    <input id="gameSearch" class="tg-search-input" type="search" placeholder="{{ t('search_game') if t else ('Search game…' if is_en else 'ابحث عن لعبة…') }}">
+  </div>
+
+  <div class="tg-game-grid" id="games-grid">
+    {% for g in games %}
+      {% set img = g.image_url if g.image_url else url_for('static', filename='img/game-default.svg') %}
+      <a class="tg-game-card searchable-game"
+         data-name="{{ g.name|lower }}"
+         href="{{ url_for('products', provider=provider, game_key=g.game_key) }}"
+         style="animation-delay: {{ (loop.index0 * 50) }}ms">
+        <div class="tg-game-cover">
+          <img src="{{ img }}" alt="{{ g.name }}" loading="{% if loop.index <= 8 %}eager{% else %}lazy{% endif %}">
+          <div class="tg-game-gradient"></div>
+          {% if loop.index <= 3 %}
+            <span class="tg-game-badge tg-game-badge-hot">🔥 {{ "Hot" if is_en else "الأكثر طلبًا" }}</span>
+          {% endif %}
+        </div>
+        <div class="tg-game-body">
+          <h3>{{ g.name }}</h3>
+          <p class="tg-game-sub">{{ g.currency_label or g.subtitle or ("In-game currency" if is_en else "شحن داخل اللعبة") }}</p>
+        </div>
+      </a>
+    {% endfor %}
+  </div>
+
+  <div id="no-games-msg" class="empty-state" style="display:none">
+    {{ "No games found." if is_en else "لا توجد نتائج." }}
+  </div>
+
+  <script>
+  (function(){
+    var input = document.getElementById('gameSearch');
+    if (!input) return;
+    var cards = Array.from(document.querySelectorAll('.searchable-game'));
+    var names = cards.map(function(c){ return (c.getAttribute('data-name') || '').toLowerCase(); });
+    var empty = document.getElementById('no-games-msg');
+    input.addEventListener('input', function(){
+      var q = this.value.trim().toLowerCase();
+      var visible = 0;
+      cards.forEach(function(c, i){
+        var show = !q || names[i].indexOf(q) !== -1;
+        c.style.display = show ? '' : 'none';
+        if (show) visible++;
+      });
+      if (empty) empty.style.display = visible ? 'none' : 'block';
+    });
+  })();
+  </script>
+{% else %}
+  <div class="card">
+    <h2>{{ "No games available" if is_en else "لا توجد ألعاب متاحة" }}</h2>
+    <p class="muted">{{ "Ask the admin to sync packages or enable games." if is_en else "اطلب من الأدمن مزامنة الباقات أو تفعيل الألعاب." }}</p>
+  </div>
+{% endif %}
+{% endblock %}

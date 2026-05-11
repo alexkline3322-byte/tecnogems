@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="form card checkout-card">
+  <div class="checkout-game-header">
+    <img src="{{ game_image(game) }}" alt="{{ game.name }}" class="checkout-game-img">
+    <div>
+      <div class="checkout-game-name">{{ game.emoji or '🎮' }} {{ game.name }}</div>
+      <div class="checkout-pkg-name">{{ (product.display_name or product.name)|public_package_name }}</div>
+    </div>
+  </div>
+
+  <div class="checkout-summary">
+    <div class="checkout-summary-row">
+      <span>{{ t("price") }}</span>
+      <strong class="checkout-price">{{ product_price(product, game) }}</strong>
+    </div>
+    {% if current_user %}
+    <div class="checkout-summary-row">
+      <span>{{ "Your balance" if is_en else "رصيدك الحالي" }}</span>
+      <strong class="{% if current_user.balance >= product_sell_usd(product, game) %}balance-ok{% else %}balance-low{% endif %}">
+        {{ wallet_money(current_user.balance) }}
+      </strong>
+    </div>
+    {% set price_usd = product_sell_usd(product, game) %}
+    {% if current_user.balance >= price_usd %}
+    <div class="checkout-summary-row balance-after">
+      <span>{{ "Balance after purchase" if is_en else "الرصيد بعد الشراء" }}</span>
+      <span>{{ wallet_money(current_user.balance - price_usd) }}</span>
+    </div>
+    {% else %}
+    <div class="checkout-insufficient">
+      ⚠️ {{ "Insufficient balance. " if is_en else "رصيدك غير كافٍ. " }}
+      <a href="{{ url_for('wallet') }}#deposit-card">{{ "Top up wallet →" if is_en else "اشحن المحفظة ←" }}</a>
+    </div>
+    {% endif %}
+    {% endif %}
+  </div>
+
+  <form method="post" id="checkout-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>{{ t("player_id") }}</label>
+    <input name="player_id" id="player_id" required minlength="3" maxlength="64"
+           placeholder="{{ t('example_id') }}" autocomplete="off"
+           oninput="clearPlayerErr()">
+    <span class="field-error" id="err-player-id"></span>
+    <p class="muted" style="font-size:12px;margin-top:6px">
+      {{ "Make sure the Player ID is correct. Top-ups cannot be reversed." if is_en else "تأكد من صحة معرف اللاعب. لا يمكن استرداد الشحنة بعد التنفيذ." }}
+    </p>
+    <button class="btn primary checkout-confirm-btn" type="submit" id="checkout-btn" style="margin-top:18px;width:100%">
+      <span id="checkout-btn-text">✅ {{ t("confirm_order") }}</span>
+      <span id="checkout-btn-loading" style="display:none">⏳ {{ "Processing..." if is_en else "جارٍ المعالجة..." }}</span>
+    </button>
+  </form>
+</div>
+
+<script>
+function clearPlayerErr() {
+  document.getElementById('err-player-id').textContent = '';
+  document.getElementById('player_id').classList.remove('input-err');
+}
+document.getElementById('checkout-form').addEventListener('submit', function(e) {
+  var pid = document.getElementById('player_id').value.trim();
+  if (pid.length < 3) {
+    document.getElementById('err-player-id').textContent = '{{ "Player ID must be at least 3 characters" if is_en else "معرف اللاعب يجب أن يكون 3 أحرف على الأقل" }}';
+    document.getElementById('player_id').classList.add('input-err');
+    e.preventDefault(); return;
+  }
+  var btn = document.getElementById('checkout-btn');
+  document.getElementById('checkout-btn-text').style.display = 'none';
+  document.getElementById('checkout-btn-loading').style.display = '';
+  btn.disabled = true;
+});
+</script>
+{% endblock %}

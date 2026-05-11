@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block content %}
+<section style="padding:34px 0">
+  <h1>إدارة الطلبات</h1>
+  <div class="links" style="margin-bottom:16px">
+    <a class="btn" href="{{ url_for('admin_orders') }}">الكل</a>
+    <a class="btn" href="{{ url_for('admin_orders', status='waiting') }}">بانتظار التنفيذ</a>
+    <a class="btn" href="{{ url_for('admin_orders', status='processing') }}">جاري التنفيذ</a>
+    <a class="btn" href="{{ url_for('admin_orders', status='supplier_pending') }}">جاري التنفيذ</a>
+    <a class="btn" href="{{ url_for('admin_orders', status='manual_pending') }}">تنفيذ يدوي</a>
+    <a class="btn" href="{{ url_for('admin_orders', status='pending') }}">معلقة</a>
+    <a class="btn" href="{{ url_for('admin_orders', status='completed') }}">مكتملة</a>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>الطلب</th><th>المستخدم</th><th>السيرفر</th><th>اللعبة</th><th>الباقة</th><th>Player ID</th><th>السعر</th><th>التاريخ / سوريا</th><th>الحالة</th><th>إجراء</th></tr></thead>
+      <tbody>
+      {% for o in orders %}
+        <tr data-order-id="{{ o.id }}">
+          <td>{{ o.order_code }}</td>
+          <td>#{{ o.user_id }}</td>
+          <td>{{ "سيرفر 1" if o.provider=="server1" else "سيرفر 2" }}</td>
+          <td>{{ o.game_name or o.game_key }}</td>
+          <td>{{ (o.game_name or o.game_key) }} - {{ o.product_name|public_package_name }}</td>
+          <td><code>{{ o.player_id }}</code></td>
+          <td>{{ wallet_money(o.price) }}</td>
+          <td>{{ o.created_at|syria_time }}</td>
+          <td>
+  {% if o.status == 'waiting' %}
+    <span class="status waiting">بانتظار التنفيذ</span>
+  {% elif o.status == 'manual_pending' %}
+    <span class="status pending">تنفيذ يدوي</span>
+    {% if o.note %}<div class="muted" style="max-width:260px;white-space:normal">السبب: {{ o.note }}</div>{% endif %}
+    {% elif o.status == 'processing' %}
+    <span class="status processing">جاري التنفيذ</span>
+  {% elif o.status == 'supplier_pending' %}
+    <span class="status processing">جاري التنفيذ</span>
+    {% if o.note %}<div class="muted" style="max-width:260px;white-space:normal">آخر تحديث: {{ o.note }}</div>{% endif %}
+  {% elif o.status == 'completed' %}
+    <span class="status completed">مكتمل</span>
+  {% elif o.status == 'rejected' %}
+    <span class="status rejected">مرفوض</span>
+  {% else %}
+    <span class="status pending">{{ o.status }}</span>
+  {% endif %}
+</td>
+          <td>
+            <form method="post" action="{{ url_for('admin_order_action', order_id=o.id, action='complete') }}" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn success" type="submit">إكمال</button></form>
+            <form method="post" action="{{ url_for('admin_order_action', order_id=o.id, action='reject') }}" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn danger" type="submit">رفض</button></form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+</section>
+{% endblock %}

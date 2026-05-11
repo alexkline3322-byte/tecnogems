@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="tg-hero">
+  <div class="tg-hero-bg">
+    <div class="tg-hero-bg-gradient"></div>
+  </div>
+  <div class="tg-hero-content">
+    <div class="tg-pill">{{ t("hero_pill") }}</div>
+    <h1>{{ t("hero_title_1") }}<br><span>{{ t("hero_title_2") }}</span></h1>
+    <p>{{ t("hero_desc") }}</p>
+    {% if current_user %}
+    <div class="tg-hero-stats">
+      <div class="tg-hero-stat">
+        <span class="tg-hero-stat-num">{{ games_count or '30+' }}</span>
+        <span class="tg-hero-stat-label">{{ "Games" if is_en else "لعبة" }}</span>
+      </div>
+      <div class="tg-hero-stat-divider"></div>
+      <div class="tg-hero-stat">
+        <span class="tg-hero-stat-num">{{ completed_orders_count or '1000+' }}</span>
+        <span class="tg-hero-stat-label">{{ "Orders" if is_en else "طلب منجز" }}</span>
+      </div>
+      <div class="tg-hero-stat-divider"></div>
+      <div class="tg-hero-stat">
+        <span class="tg-hero-stat-num">⚡</span>
+        <span class="tg-hero-stat-label">{{ "Instant" if is_en else "فوري" }}</span>
+      </div>
+    </div>
+    {% endif %}
+    <div class="tg-hero-actions">
+      <a href="#games" class="tg-btn tg-primary">{{ t("browse_games") }}</a>
+      {% if current_user %}
+        <a href="{{ url_for('wallet') }}" class="tg-btn tg-glass">{{ t("topup_wallet") }}</a>
+      {% else %}
+        <a href="{{ url_for('register') }}" class="tg-btn tg-glass">{{ t("register") }}</a>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{# V45: replaced dynamic DB-driven grid with static "Popular games" featured grid. #}
+{# Original loop preserved in git history. To re-enable DB grid, see _games_grid_legacy.html. #}
+{% include "_popular_games.html" %}
+
+<button class="back-to-top" id="back-to-top" aria-label="العودة للأعلى" title="العودة للأعلى">
+  <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+</button>
+
+<script>
+(function(){
+  var input = document.getElementById('gameSearch');
+  if (!input) return;
+  var cards = Array.from(document.querySelectorAll('.searchable-game'));
+  var names = cards.map(function(c){ return (c.getAttribute('data-name') || c.innerText || '').toLowerCase(); });
+  input.addEventListener('input', function(){
+    var q = this.value.trim().toLowerCase();
+    var visible = 0;
+    cards.forEach(function(card, i){
+      var show = names[i].indexOf(q) >= 0;
+      card.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    var noMsg = document.getElementById('no-games-msg');
+    if (noMsg) noMsg.style.display = visible === 0 && q ? '' : 'none';
+  });
+})();
+
+// Back to top
+(function(){
+  var btn = document.getElementById('back-to-top');
+  if (!btn) return;
+  window.addEventListener('scroll', function(){
+    btn.classList.toggle('visible', window.scrollY > 400);
+  });
+  btn.addEventListener('click', function(){
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+})();
+</script>
+{% endblock %}
