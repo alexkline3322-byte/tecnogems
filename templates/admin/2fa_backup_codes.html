@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<section style="padding:34px 0">
+  <div class="form card auth-card" style="max-width:560px;margin:0 auto">
+    {% if just_enabled %}
+      <h2 style="color:#4ade80">تم تفعيل المصادقة الثنائية</h2>
+    {% else %}
+      <h2>رموز استرداد جديدة</h2>
+    {% endif %}
+
+    <div style="margin:16px 0;padding:14px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.35);border-radius:8px;color:#fca5a5;font-size:13px;line-height:1.7">
+      <strong>احفظ هذه الرموز الآن.</strong>
+      لن نعرضها مرة أخرى. استخدم أحدها مرة واحدة فقط إذا فقدت الوصول
+      إلى تطبيق المصادقة. الرموز القديمة — إن وُجدت — لم تعد صالحة.
+    </div>
+
+    <div style="background:rgba(255,255,255,.05);border-radius:10px;padding:18px;font-family:monospace;font-size:17px;letter-spacing:1px">
+      {% for code in backup_codes %}
+        <div style="padding:6px 0;border-bottom:1px dashed rgba(255,255,255,.08);user-select:all">
+          {{ loop.index }}. <span style="margin-inline-start:10px">{{ code }}</span>
+        </div>
+      {% endfor %}
+    </div>
+
+    <div style="display:flex;gap:10px;margin-top:18px">
+      <button type="button" class="btn" style="flex:1"
+              onclick="const t=document.getElementById('codes-txt').value;navigator.clipboard?.writeText(t);this.textContent='تم النسخ';setTimeout(()=>{this.textContent='نسخ الرموز';},1600)">
+        نسخ الرموز
+      </button>
+      <a href="{{ url_for('admin_dashboard') }}" class="btn primary" style="flex:1;text-align:center">
+        تم، انتقل للوحة
+      </a>
+    </div>
+
+    <textarea id="codes-txt" readonly
+      style="position:absolute;left:-9999px;top:-9999px">{% for code in backup_codes %}{{ code }}
+{% endfor %}</textarea>
+  </div>
+</section>
+{% endblock %}

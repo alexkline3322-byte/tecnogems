@@ -66,6 +66,7 @@ tecnogems/
 | **V50** | [#1](https://github.com/alexkline3322-byte/tecnogems/pull/1) | 14 إصلاح حرج/عالٍ (Critical + High) | `V50_SECURITY_FIXES.md` |
 | **V50.2** | [#2](https://github.com/alexkline3322-byte/tecnogems/pull/2) | 22 إصلاح متوسط/منخفض (Medium + Low) | `V50_2_SECURITY_FIXES.md` |
 | **A** | [#4](https://github.com/alexkline3322-byte/tecnogems/pull/4) | تنظيف هيكل المستودع: نقل الكود من `src/tecnogems_V49_STABLE/` إلى الجذر + حذف الـ zip القديم | — |
+| **B** | [#5](https://github.com/alexkline3322-byte/tecnogems/pull/5) | 2FA (TOTP) لحسابات الأدمن: pyotp + QR + 10 رموز استرداد + `admin_2fa_required` switch | `security_2fa.py` |
 
 **أبرز ما طُبِّق أمنياً:**
 - `secrets.token_urlsafe` لـ `order_code` و `deposit_code`
@@ -91,10 +92,12 @@ tecnogems/
   - ~~نقل محتويات `src/tecnogems_V49_STABLE/*` إلى جذر المستودع~~
   - ~~حذف `tecnogems_V49_STABLE(1).zip`~~
 
-- [ ] **B. 2FA لحسابات الأدمن** *(PR متوسط)*
-  - `pyotp` + عمود `users.totp_secret`
-  - `/admin/2fa/setup` مع QR code + 10 backup codes
-  - حارس `require_2fa_admin` على كل admin routes
+- [x] ~~**B. 2FA لحسابات الأدمن**~~ ✅ [PR #5](https://github.com/alexkline3322-byte/tecnogems/pull/5)
+  - ~~`pyotp` + أعمدة `users.totp_*` (secret, enabled, backup_codes, enabled_at)~~
+  - ~~`/admin/2fa/setup` مع QR code + 10 backup codes~~
+  - ~~`/admin/2fa/challenge` + `/admin/2fa/disable` + `/admin/2fa/backup-codes/regenerate`~~
+  - ~~حارس 2FA داخل `admin_required` (session["admin_2fa_verified"])~~
+  - ~~setting `admin_2fa_required` (0/1) للتدرج في الإجبار~~
 
 - [ ] **C. Tests + CI** *(PR كبير — لكن الأعلى قيمة)*
   - `tests/` مع pytest: auth, orders, wallet, admin, security
@@ -142,6 +145,8 @@ tecnogems/
 | **حذف PDF من uploads** | PDFs يمكن أن تحوي JS/XSS payloads. PNG/JPG/WEBP فقط. |
 | **CSP لا يزال يسمح `style-src unsafe-inline`** | بسبب inline styles في القوالب. بند F سيرفع هذا. |
 | **`FLASK_ENV=production` يفعّل كل السلوكيات الصارمة** | قرار مركزي: debugger off, CSRF strict, إلخ. |
+| **Admin 2FA opt-in ثم forced** | `admin_2fa_required` setting يبدأ `"0"` (اختياري) ثم يُرفع إلى `"1"` بعد تسجيل كل admin. يتجنّب lockout فوري عند النشر. |
+| **Backup codes PBKDF2-hashed** | DB leak لا يكشف رموز الاسترداد غير المستخدمة. الرموز one-time، iteration ثابت على كل الـ 10 لتجنب timing oracle. |
 
 ## 7) متغيرات البيئة المهمة
 
@@ -201,10 +206,13 @@ gunicorn -k gthread -w 2 --threads 4 -b 0.0.0.0:8000 wsgi:app
 | Upload validation | `app.py` — `_PROOF_MAGIC`, `ALLOWED_UPLOAD_EXTS` |
 | `safe_next_url` | `app.py` — ابحث عن الاسم |
 | Templates base (CSP nonce) | `templates/base.html` |
+| Admin 2FA helpers (TOTP, backup codes) | `security_2fa.py` |
+| Admin 2FA routes + guard | `app.py` — `admin_2fa_*` + inside `admin_required` |
+| Admin 2FA templates | `templates/admin/2fa_setup.html`, `2fa_challenge.html`, `2fa_backup_codes.html` |
 | Robots.txt (حجب /admin و /api) | `static/robots.txt` |
 
 ## 10) آخر تحديث 📌
 
-- **Commit:** (سيُحدَّث بعد دمج PR #4) — Branch: `chore/cleanup-repo-structure`
-- **الحالة:** V50.2 مكتمل + البند A (تنظيف الهيكل) في انتظار الدمج. الكود الآن في جذر المستودع مباشرة.
-- **التالي:** البند **B** (2FA للأدمن) أو **C** (Tests + CI).
+- **Commit:** (سيُحدَّث بعد دمج PR #5) — Branch: `feat/admin-2fa`
+- **الحالة:** V50.2 + البند A + البند B مكتمل. 2FA جاهز للاستخدام على حسابات الأدمن. المفتاح `admin_2fa_required` افتراضياً "0" (اختياري) حتى يُفعّل كل admin حسابه، ثم يُرفع إلى "1".
+- **التالي:** البند **C** (Tests + CI — الأعلى قيمة) أو **D** (Sentry + JSON logs + audit table).
