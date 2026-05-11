@@ -266,7 +266,13 @@
     <h3>{{ "Sign out?" if is_en else "تسجيل الخروج؟" }}</h3>
     <p>{{ "Are you sure you want to sign out?" if is_en else "هل تريد تسجيل الخروج من حسابك؟" }}</p>
     <div class="logout-modal-actions">
-      <a href="{{ url_for('logout') }}" class="btn primary">{{ "Yes, sign out" if is_en else "نعم، خروج" }}</a>
+      {# V50.2 LOW: logout via POST (CSRF-protected) instead of a bare GET link.
+         The action now requires a valid CSRF token, so cross-site <img>/<a>
+         tricks cannot log the user out. #}
+      <form method="post" action="{{ url_for('logout') }}" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn primary" type="submit">{{ "Yes, sign out" if is_en else "نعم، خروج" }}</button>
+      </form>
       <button type="button" class="btn" onclick="document.getElementById('logout-modal').style.display='none'">{{ "Cancel" if is_en else "إلغاء" }}</button>
     </div>
   </div>

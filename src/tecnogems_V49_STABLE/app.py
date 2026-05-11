@@ -85,16 +85,26 @@ app.secret_key = _secret
 BASE_URL = os.getenv("BASE_URL", "https://tecnogems.com").rstrip("/")
 _is_https = BASE_URL.startswith("https://")
 
+# V50.2 LOW/MEDIUM: production should enforce CSRF SSL strict check (verifies
+# Referer header matches host over HTTPS). Dev stays permissive so you can
+# test from http://127.0.0.1 without tripping the check.
+_IS_PROD = os.getenv("FLASK_ENV") == "production"
+# V50.2 MEDIUM: shorten session lifetime from 14 days to 7 days. Long-lived
+# sessions survive long after a device is stolen/lost. 7 days balances UX
+# (weekly-or-more active users stay logged in) with risk.
+_SESSION_DAYS = int(os.getenv("SESSION_LIFETIME_DAYS", "7") or 7)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=_is_https,
-    PERMANENT_SESSION_LIFETIME=timedelta(days=14),
+    PERMANENT_SESSION_LIFETIME=timedelta(days=_SESSION_DAYS),
     MAX_CONTENT_LENGTH=5 * 1024 * 1024,  # 5 MB upload cap
     # CSRF: no time limit (token tied to session lifetime). Avoids the
     # "page expired, please retry" error after the user idles on the login form.
     WTF_CSRF_TIME_LIMIT=None,
-    WTF_CSRF_SSL_STRICT=False,
+    # V50.2 MEDIUM: SSL-strict enforces Referer header check for POSTs over
+    # HTTPS. Kept off in dev so local http:// testing still works.
+    WTF_CSRF_SSL_STRICT=_IS_PROD,
 )
 
 # V50 SECURITY: input length caps to prevent storage-bomb / CPU-DoS attacks.
@@ -154,7 +164,19 @@ except Exception as _exc:
 try:
     from flask_limiter import Limiter
     from flask_limiter.util import get_remote_address
-    limiter = Limiter(get_remote_address, app=app, default_limits=[])
+    # V50.2 MEDIUM: when REDIS_URL is set, use the Redis storage backend so
+    # rate limits are shared across gunicorn workers and survive restarts.
+    # Falls back to in-memory when Redis is unavailable (dev or single-process).
+    _limiter_kwargs = {"app": app, "default_limits": []}
+    _redis_url = os.getenv("REDIS_URL", "").strip()
+    if _redis_url:
+        _limiter_kwargs["storage_uri"] = _redis_url
+        _limiter_kwargs["strategy"] = "fixed-window"
+    limiter = Limiter(get_remote_address, **_limiter_kwargs)
+    if _redis_url:
+        log.info("Flask-Limiter using Redis storage backend.")
+    else:
+        log.warning("Flask-Limiter using in-memory storage — limits are per-worker and cleared on restart. Set REDIS_URL for shared limits.")
 except Exception:
     limiter = None
     log.warning("Flask-Limiter not installed. Rate limiting disabled. Run: pip install Flask-Limiter")
@@ -279,7 +301,10 @@ if os.path.isdir(_LEGACY_UPLOADS):
     except OSError:
         pass
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-ALLOWED_UPLOAD_EXTS = {"jpg", "jpeg", "png", "webp", "gif", "pdf"}
+# V50.2 LOW: removed "pdf" from deposit-proof allowed extensions. PDFs
+# can embed JavaScript and are a common malware vector; images are
+# sufficient for a payment-proof screenshot and much safer to serve back.
+ALLOWED_UPLOAD_EXTS = {"jpg", "jpeg", "png", "webp", "gif"}
 
 def _ext_ok(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_UPLOAD_EXTS
@@ -287,12 +312,12 @@ def _ext_ok(filename):
 
 # PATCH-H4: magic-byte verification for deposit proofs (prevents file-type
 # spoofing such as evil.php renamed to evil.png).
+# V50.2 LOW: PDF removed — images only.
 _PROOF_MAGIC = {
     b"\xff\xd8\xff": "jpg",
     b"\x89PNG\r\n\x1a\n": "png",
     b"GIF87a": "gif",
     b"GIF89a": "gif",
-    b"%PDF-": "pdf",
 }
 
 def _proof_magic_ok(file_stream):
@@ -1102,10 +1127,24 @@ def add_cache_headers(response):
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    # V50.2 LOW: block legacy cross-domain Flash/Silverlight policy files.
+    response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+    # V50.2 LOW: isolate browsing-context group (mitigates Spectre / cross-origin
+    # window references). Safe here because we do not embed third-party windows.
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    # V50.2 LOW: block other origins from embedding our resources as images
+    # or scripts. "same-site" keeps our own subdomains working.
+    response.headers["Cross-Origin-Resource-Policy"] = "same-site"
     # PATCH-C4: nonce-based CSP — no more 'unsafe-inline' for scripts.
     # Inline <script> blocks must declare nonce="{{ csp_nonce }}" to execute.
     from flask import g as _g
     _nonce = getattr(_g, "_csp_nonce", "")
+    # V50.2 MEDIUM: tighter CSP. Added object-src 'none' (blocks <object>/<embed>
+    # and Flash/plugins), form-action 'self' (forms can only POST to our origin
+    # — blocks form-hijack XSS payloads), frame-src 'none' (we don't use frames),
+    # and upgrade-insecure-requests so any accidental http:// asset is auto-upgraded.
+    # Note: style-src still includes 'unsafe-inline' because many templates use
+    # inline style="..." attributes. Removing it is tracked as a follow-up refactor.
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "img-src 'self' data: https:; "
@@ -1114,10 +1153,17 @@ def add_cache_headers(response):
         "font-src 'self' data: https://fonts.gstatic.com; "
         "connect-src 'self'; "
         "frame-ancestors 'self'; "
-        "base-uri 'self';"
+        "frame-src 'none'; "
+        "object-src 'none'; "
+        "form-action 'self'; "
+        "base-uri 'self'; "
+        "upgrade-insecure-requests;"
     )
     if request.is_secure:
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        # V50.2 LOW: add 'preload' so the browser can submit the domain to
+        # the HSTS preload list (requires 2-year max-age + includeSubDomains,
+        # which we have). Site admins must still enrol at hstspreload.org.
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
     return gzip_text_response(response)
 
 
@@ -1277,6 +1323,7 @@ def register():
 
 
 @app.route("/verify-email/<token>")
+@(limiter.limit("20 per hour") if limiter else (lambda f: f))  # V50.2 MEDIUM: was unlimited
 def verify_email(token):
     ok, err = verify_user_email(token)
     if ok:
@@ -1287,6 +1334,7 @@ def verify_email(token):
 
 
 @app.route("/resend-verification", methods=["GET", "POST"])
+@(limiter.limit("3 per minute;20 per hour") if limiter else (lambda f: f))  # V50.2 MEDIUM: was unlimited
 def resend_verification():
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
@@ -1325,6 +1373,7 @@ def forgot_password():
 
 
 @app.route("/reset-password/<token>", methods=["GET", "POST"])
+@(limiter.limit("10 per hour") if limiter else (lambda f: f))  # V50.2 MEDIUM: was unlimited
 def reset_password(token):
     user = get_user_by_reset_token(token)
     if not user:
@@ -1386,8 +1435,16 @@ def login():
     )
 
 
-@app.route("/logout")
+@app.route("/logout", methods=["GET", "POST"])
 def logout():
+    # V50.2 LOW: prefer POST (CSRF-protected form) for logout. GET is kept
+    # for backwards compatibility with existing <a href="/logout"> links
+    # and email deep-links, but new UI code should POST. When the request
+    # is a GET we still log it so we can track how many clients are using
+    # the deprecated path.
+    if request.method == "GET":
+        log.info("logout via GET from ip=%s user_id=%s — consider moving to POST form",
+                 request.remote_addr, session.get("user_id"))
     session.clear()
     flash("تم تسجيل الخروج", "info")
     return redirect(url_for("home"))
@@ -1560,11 +1617,11 @@ def wallet():
 
         if proof_file and proof_file.filename:
             if not _ext_ok(proof_file.filename):
-                flash("نوع الملف غير مدعوم. الأنواع المسموحة: jpg, png, webp, pdf", "danger")
+                flash("نوع الملف غير مدعوم. الأنواع المسموحة: jpg, png, webp, gif", "danger")
                 return redirect(url_for("wallet"))
             # PATCH-H4: verify file content (magic bytes) — not just extension.
             if not _proof_magic_ok(proof_file.stream):
-                flash("الملف لا يطابق نوعه المُعلَن. أرسل صورة (JPG/PNG/WebP/GIF) أو PDF حقيقياً.", "danger")
+                flash("الملف لا يطابق نوعه المُعلَن. أرسل صورة (JPG/PNG/WebP/GIF) حقيقياً.", "danger")
                 return redirect(url_for("wallet"))
             filename = secure_filename(proof_file.filename)
             filename = f"{user['id']}_{int(__import__('time').time())}_{filename}"
@@ -1668,11 +1725,29 @@ def admin_order_action(order_id, action):
     order = get_order(order_id)
     if not order:
         abort(404)
+    # V50.2 MEDIUM: audit trail for every admin order action so a compromised
+    # admin account leaves a paper trail (who, from where, which order, what
+    # change, from which status).
+    admin = current_user()
     if action == "complete":
         update_order(order_id, "completed", order.get("provider_order_id"), "Manual complete")
+        log.warning(
+            "ADMIN_ORDER_COMPLETE admin_id=%s admin_email=%s order_id=%s "
+            "old_status=%s user_id=%s ip=%s",
+            (admin or {}).get("id"), (admin or {}).get("email"),
+            order_id, order.get("status"), order.get("user_id"),
+            request.remote_addr,
+        )
         flash("تم تعليم الطلب كمكتمل", "success")
     elif action == "reject":
         update_order(order_id, "rejected", None, "Manual reject")
+        log.warning(
+            "ADMIN_ORDER_REJECT admin_id=%s admin_email=%s order_id=%s "
+            "old_status=%s user_id=%s amount=%s ip=%s",
+            (admin or {}).get("id"), (admin or {}).get("email"),
+            order_id, order.get("status"), order.get("user_id"),
+            order.get("price"), request.remote_addr,
+        )
         flash("تم رفض الطلب وإرجاع الرصيد", "warning")
     else:
         abort(404)
@@ -2034,6 +2109,13 @@ def admin_add_game():
     else:
         add_custom_game(provider, game_key, name, emoji, image_url, 1)
         set_game_active(provider, game_key, True)
+        # V50.2 MEDIUM: audit log for admin game catalogue changes.
+        admin = current_user()
+        log.warning(
+            "ADMIN_GAME_ADD admin_id=%s admin_email=%s provider=%s game_key=%s ip=%s",
+            (admin or {}).get("id"), (admin or {}).get("email"),
+            provider, game_key, request.remote_addr,
+        )
         flash(f"تمت إضافة/تفعيل اللعبة: {name}", "success")
     return redirect(url_for("admin_games"))
 
@@ -2056,10 +2138,15 @@ def admin_game_image(provider, game_key):
         if ext not in [".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg"]:
             flash("نوع الصورة غير مدعوم", "danger")
             return redirect(url_for("admin_games"))
+        # V50.2 MEDIUM (M8): random suffix on uploaded game filenames so they
+        # are not trivially enumerable. The previous "provider_gamekey.ext"
+        # pattern let anyone guess URLs for every game in the catalogue
+        # (and cache-bust attacks / asset scraping).
+        _rand = secrets.token_urlsafe(8).replace("-", "").replace("_", "")[:10]
         if ext == ".svg":
             # PATCH-H1: sanitise SVG to prevent stored-XSS via <script> or
             # javascript: URIs that would execute when the image is shown.
-            safe_name = secure_filename(f"{provider}_{game_key}.svg")
+            safe_name = secure_filename(f"{provider}_{game_key}_{_rand}.svg")
             target = uploads_dir / safe_name
             try:
                 raw = file.stream.read().decode("utf-8", errors="replace")
@@ -2071,7 +2158,7 @@ def admin_game_image(provider, game_key):
                 fh.write(cleaned)
             image_url = "/" + str(target).replace("\\", "/")
         else:
-            base = secure_filename(f"{provider}_{game_key}")
+            base = secure_filename(f"{provider}_{game_key}_{_rand}")
             saved = process_upload_to_webp(file, str(uploads_dir), base, max_w=800, quality=82)
             if not saved:
                 flash("تعذّر معالجة الصورة", "danger")
@@ -2081,6 +2168,13 @@ def admin_game_image(provider, game_key):
 
     if image_url:
         update_game_image(provider, game_key, image_url)
+        # V50.2 MEDIUM: audit log for admin image changes.
+        admin = current_user()
+        log.warning(
+            "ADMIN_GAME_IMAGE admin_id=%s admin_email=%s provider=%s game_key=%s url=%s ip=%s",
+            (admin or {}).get("id"), (admin or {}).get("email"),
+            provider, game_key, image_url, request.remote_addr,
+        )
         flash("تم تحديث صورة اللعبة", "success")
     else:
         flash("اختر صورة أو ضع رابط صورة", "warning")
@@ -2201,11 +2295,24 @@ def admin_deposits():
 @admin_required
 @(limiter.limit("60 per minute") if limiter else (lambda f: f))
 def admin_deposit_action(deposit_id, action):
+    # V50.2 MEDIUM: audit trail for deposit approve/reject. Deposits are
+    # direct balance writes, so every admin decision is logged.
+    admin = current_user()
     if action == "approve":
         ok = update_deposit(deposit_id, "approved")
+        log.warning(
+            "ADMIN_DEPOSIT_APPROVE admin_id=%s admin_email=%s deposit_id=%s ok=%s ip=%s",
+            (admin or {}).get("id"), (admin or {}).get("email"),
+            deposit_id, ok, request.remote_addr,
+        )
         flash("تمت الموافقة وإضافة الرصيد" if ok else "لا يمكن تعديل هذا الطلب", "success" if ok else "warning")
     elif action == "reject":
         ok = update_deposit(deposit_id, "rejected")
+        log.warning(
+            "ADMIN_DEPOSIT_REJECT admin_id=%s admin_email=%s deposit_id=%s ok=%s ip=%s",
+            (admin or {}).get("id"), (admin or {}).get("email"),
+            deposit_id, ok, request.remote_addr,
+        )
         flash("تم رفض طلب الشحن" if ok else "لا يمكن تعديل هذا الطلب", "warning")
     else:
         abort(404)
@@ -2397,6 +2504,12 @@ def auth_google_callback():
 # JSON requests cannot be forged via a hidden form, and the session cookie
 # uses SameSite=Lax which already blocks cross-site form-style POSTs. Apps
 # that need to call these from another origin must add their own auth.
+#
+# V50.2 MEDIUM: however, attackers CAN reach these endpoints from any
+# origin if the browser decides to send cookies. We now add a defence-in-depth
+# Origin/Referer check via before_request: for non-GET /api/* requests the
+# Origin (or Referer) header must match our host or be absent (curl / native
+# app clients). Mismatched origins are rejected with 403.
 if csrf is not None:
     for _fn in (
         api_login, api_register, api_logout, api_orders,
@@ -2407,6 +2520,44 @@ if csrf is not None:
             csrf.exempt(_fn)
         except Exception:
             pass
+
+
+@app.before_request
+def _api_origin_guard():
+    """V50.2 MEDIUM: reject state-changing /api/* requests whose Origin or
+    Referer header points at a different host than this server. Protects
+    CSRF-exempt endpoints from being called by malicious sites that
+    managed to piggy-back on SameSite=Lax exceptions (e.g. top-level
+    navigation POST fallbacks).
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    if not request.path.startswith("/api/"):
+        return None
+    origin = request.headers.get("Origin", "")
+    referer = request.headers.get("Referer", "")
+    # Absent Origin+Referer is allowed: real mobile / native / curl clients
+    # often omit them. Browsers will send at least one.
+    if not origin and not referer:
+        return None
+    try:
+        from urllib.parse import urlparse
+        host = request.host  # includes port if non-standard
+        for candidate in (origin, referer):
+            if not candidate:
+                continue
+            p = urlparse(candidate)
+            if not p.netloc:
+                continue
+            if p.netloc != host:
+                log.warning(
+                    "API_ORIGIN_BLOCK path=%s origin=%s referer=%s host=%s ip=%s",
+                    request.path, origin, referer, host, request.remote_addr,
+                )
+                return jsonify({"error": "cross-origin request rejected"}), 403
+    except Exception as exc:
+        log.warning("_api_origin_guard parse error: %s", exc)
+    return None
 
 
 if __name__ == "__main__":
