@@ -97,6 +97,27 @@ app.config.update(
     WTF_CSRF_SSL_STRICT=False,
 )
 
+# V50 SECURITY: input length caps to prevent storage-bomb / CPU-DoS attacks.
+# Any field longer than these limits is rejected before touching the DB or
+# password hashing. Values balance real-world use vs abuse.
+MAX_PLAYER_ID_LEN = 64
+MAX_PASSWORD_LEN = 128
+MAX_EMAIL_LEN = 120
+MAX_NAME_LEN = 80
+MAX_PHONE_LEN = 32
+MAX_PROOF_TEXT_LEN = 2000
+# Deposit ceiling (in the method's native currency for SYP, USD otherwise).
+# Defaults to 10,000 USD. Override via MAX_DEPOSIT_USD env var.
+try:
+    MAX_DEPOSIT_USD = float(os.getenv("MAX_DEPOSIT_USD", "10000"))
+except Exception:
+    MAX_DEPOSIT_USD = 10000.0
+# Admin balance set ceiling (prevents a compromised admin wiping the company).
+try:
+    MAX_ADMIN_BALANCE = float(os.getenv("MAX_ADMIN_BALANCE", "1000000"))
+except Exception:
+    MAX_ADMIN_BALANCE = 1_000_000.0
+
 # CSRF protection
 try:
     from flask_wtf import CSRFProtect
@@ -238,10 +259,25 @@ def process_upload_to_webp(file_storage, dest_dir, base_name, max_w=1200, qualit
         return None
 
 
-# Uploads (kept inside static for backward compat with old proof links).
-# New deposit proofs are also accessible via /uploads/proof/<filename> with login_required.
-UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "static", "uploads")
+# Uploads (V50 SECURITY H4): moved OUT of static/ into data/uploads/ so
+# the public static handler cannot bypass login_required on /uploads/proof/.
+# The old /static/uploads/ path is also explicitly blocked below.
+UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "data", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# Migrate any legacy files that may already exist under static/uploads/ once.
+_LEGACY_UPLOADS = os.path.join(os.path.dirname(__file__), "static", "uploads")
+if os.path.isdir(_LEGACY_UPLOADS):
+    try:
+        for _name in os.listdir(_LEGACY_UPLOADS):
+            _src = os.path.join(_LEGACY_UPLOADS, _name)
+            _dst = os.path.join(UPLOAD_FOLDER, _name)
+            if os.path.isfile(_src) and not os.path.exists(_dst):
+                try:
+                    os.rename(_src, _dst)
+                except OSError:
+                    pass
+    except OSError:
+        pass
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 ALLOWED_UPLOAD_EXTS = {"jpg", "jpeg", "png", "webp", "gif", "pdf"}
 
@@ -810,6 +846,15 @@ def current_user():
     if not user:
         session.clear()
         return None
+    # V50 SECURITY (HH): deactivated users must not retain access on
+    # long-lived sessions. authenticate() checks active=1 at login but the
+    # per-request guard did not. Clear the session if the user was deactivated.
+    try:
+        if int(user.get("active", 1)) != 1:
+            session.clear()
+            return None
+    except Exception:
+        pass
     return user
 
 
@@ -906,9 +951,26 @@ def validate_password_strength(password):
 def safe_next_url(default_endpoint="home", **url_for_kwargs):
     """PATCH-B4: now accepts kwargs forwarded to url_for() so callers like
     safe_next_url("products", provider=p, game_key=k) no longer crash with
-    TypeError. The ?next= parameter still wins when present and safe."""
+    TypeError. The ?next= parameter still wins when present and safe.
+
+    V50 SECURITY (HF): hardened against open-redirect variants:
+    - reject backslashes (\\evil.com), null bytes, control chars
+    - reject any ':' (blocks javascript:, http://, etc)
+    - reject /%2f%2f... (encoded protocol-relative)
+    - cap length to avoid log/memory pollution
+    """
     nxt = request.args.get("next") or request.form.get("next") or ""
-    if nxt.startswith("/") and not nxt.startswith("//") and not nxt.startswith("/legacy"):
+    if not nxt or len(nxt) > 512:
+        return url_for(default_endpoint, **url_for_kwargs)
+    # Reject anything that is not a plain same-origin path.
+    bad_chars = ("\\", "\x00", "\r", "\n", "\t", " ")
+    if any(c in nxt for c in bad_chars) or ":" in nxt:
+        return url_for(default_endpoint, **url_for_kwargs)
+    # Lowercase for encoded-scheme check
+    low = nxt.lower()
+    if low.startswith("//") or low.startswith("/%2f") or low.startswith("/\\"):
+        return url_for(default_endpoint, **url_for_kwargs)
+    if nxt.startswith("/") and not nxt.startswith("/legacy"):
         return nxt
     return url_for(default_endpoint, **url_for_kwargs)
 
@@ -1129,6 +1191,15 @@ def serve_proof(filename):
     return resp
 
 
+# V50 SECURITY (H4): explicitly block the legacy public path.
+# Flask's built-in static handler would otherwise happily serve anything
+# left in static/uploads/ to the world without auth. This route takes
+# precedence and forces a 403.
+@app.route("/static/uploads/<path:_ignored>")
+def _block_static_uploads(_ignored):
+    abort(403)
+
+
 @app.route("/")
 @app.route("/legacy")
 def home():
@@ -1157,6 +1228,17 @@ def register():
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
         password_confirm = request.form.get("password_confirm", "")
+        # V50 SECURITY (HD): enforce upper length bounds before hashing the
+        # password. Without this a 10MB password would consume CPU in
+        # pbkdf2 and be a cheap DoS vector.
+        if (
+            len(password) > MAX_PASSWORD_LEN
+            or len(email) > MAX_EMAIL_LEN
+            or len(request.form.get("name", "")) > MAX_NAME_LEN
+            or len(request.form.get("phone", "")) > MAX_PHONE_LEN
+        ):
+            flash("أحد الحقول تجاوز الحد المسموح به", "danger")
+            return render_template("register.html", hide_phone_on_register=get_setting("hide_phone_on_register", "0"))
         if password != password_confirm:
             flash("كلمة المرور وتأكيدها غير متطابقين", "danger")
             return render_template("register.html", hide_phone_on_register=get_setting("hide_phone_on_register", "0"))
@@ -1268,7 +1350,16 @@ def reset_password(token):
 def login():
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
-        user = authenticate(email, request.form.get("password",""))
+        password = request.form.get("password", "")
+        # V50 SECURITY (HD): reject oversized inputs before password hashing
+        # to prevent CPU-DoS via huge passwords.
+        if len(password) > MAX_PASSWORD_LEN or len(email) > MAX_EMAIL_LEN:
+            log.warning("Rejected oversized login inputs from %s", request.remote_addr)
+            flash("بيانات الدخول غير صحيحة", "danger")
+            return render_template("login.html", prefill_email="",
+                seo_title="تسجيل الدخول - TecnoGems شحن ألعاب",
+                seo_description="سجّل الدخول إلى حسابك في TecnoGems لمتابعة طلبات شحن الألعاب وإدارة محفظتك.")
+        user = authenticate(email, password)
         if user:
             if email_verification_is_enabled() and user["role"] != "admin" and not user.get("email_verified"):
                 flash("يجب تفعيل بريدك الإلكتروني قبل تسجيل الدخول. راجع بريدك.", "warning")
@@ -1280,6 +1371,9 @@ def login():
             session.permanent = True
             flash("تم تسجيل الدخول بنجاح", "success")
             return redirect(safe_next_url("home"))
+        # V50 SECURITY (M10): log failed auth attempts for monitoring / fail2ban.
+        log.warning("Failed login attempt for email=%s from ip=%s",
+                    email, request.remote_addr)
         flash("بيانات الدخول غير صحيحة", "danger")
         return render_template("login.html",
             prefill_email=email,
@@ -1364,7 +1458,9 @@ def checkout(product_id):
         abort(404)
     if request.method == "POST":
         player_id = request.form.get("player_id", "").strip()
-        if len(player_id) < 3:
+        # V50 SECURITY (C1): bound player_id length to prevent storage-bomb
+        # attacks where MBs of garbage are shoved into orders.player_id.
+        if len(player_id) < 3 or len(player_id) > MAX_PLAYER_ID_LEN:
             flash("معرف اللاعب غير صحيح", "danger")
             return redirect(request.url)
 
@@ -1451,6 +1547,11 @@ def wallet():
         method_id = request.form.get("method_id", "")
         method = get_payment_method(method_id)
         proof_text = request.form.get("proof", "").strip()
+        # V50 SECURITY (HE): cap proof-text length (2000 chars ~= 2KB).
+        # Prevents a user from shoving MBs of garbage into deposits.proof.
+        if len(proof_text) > MAX_PROOF_TEXT_LEN:
+            flash("وصف الإثبات طويل جداً (الحد الأقصى 2000 حرف)", "danger")
+            return redirect(url_for("wallet"))
         proof_file = request.files.get("proof_image")
         proof_parts = []
 
@@ -1490,6 +1591,13 @@ def wallet():
             amount_usd = round(amount / rate, 2)
         else:
             amount_usd = amount
+
+        # V50 SECURITY (C3): cap the USD-equivalent deposit amount so abusive
+        # users cannot submit fake deposits for billions that clutter the
+        # admin queue or cause float overflow in financial aggregation.
+        if amount_usd > MAX_DEPOSIT_USD:
+            flash(f"المبلغ يتجاوز الحد الأقصى المسموح به ({MAX_DEPOSIT_USD:.0f}$)", "danger")
+            return redirect(url_for("wallet"))
 
         dep = create_deposit(user["id"], amount, method_id, proof, amount_usd=amount_usd)
         if dep:
@@ -1555,6 +1663,7 @@ def admin_orders():
 @app.route("/admin/order/<int:order_id>/<action>", methods=["POST"])
 @login_required
 @admin_required
+@(limiter.limit("60 per minute") if limiter else (lambda f: f))
 def admin_order_action(order_id, action):
     order = get_order(order_id)
     if not order:
@@ -1597,6 +1706,7 @@ def admin_user_detail(user_id):
 @app.route("/admin/user/<int:user_id>/balance", methods=["POST"])
 @login_required
 @admin_required
+@(limiter.limit("30 per minute") if limiter else (lambda f: f))
 def admin_user_balance(user_id):
     try:
         new_balance = float(request.form.get("amount", "0") or 0)
@@ -1604,7 +1714,24 @@ def admin_user_balance(user_id):
         flash("أدخل رقمًا صحيحًا للرصيد", "danger")
         return redirect(safe_next_url("admin_users"))
 
+    # V50 SECURITY (HG): bound admin balance edits to [0, MAX_ADMIN_BALANCE].
+    # Prevents a compromised admin account from setting negative or
+    # astronomical balances.
+    if not (0 <= new_balance <= MAX_ADMIN_BALANCE):
+        flash(f"القيمة يجب أن تكون بين 0 و {MAX_ADMIN_BALANCE:.0f}", "danger")
+        return redirect(safe_next_url("admin_users"))
+
+    admin = current_user()
+    old = get_user_by_id(user_id)
+    old_balance = float(old["balance"]) if old else None
     set_user_balance(user_id, new_balance)
+    # V50 SECURITY (HG): audit log every admin balance change.
+    log.warning(
+        "ADMIN_BALANCE_CHANGE admin_id=%s admin_email=%s target_user_id=%s "
+        "old=%s new=%s ip=%s",
+        (admin or {}).get("id"), (admin or {}).get("email"),
+        user_id, old_balance, new_balance, request.remote_addr
+    )
     flash("تم تعيين الرصيد الجديد للمستخدم", "success")
     return redirect(safe_next_url("admin_users"))
 
@@ -1708,8 +1835,15 @@ def api_login():
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
+    # V50 SECURITY (HD): oversized inputs rejected pre-hash.
+    if len(password) > MAX_PASSWORD_LEN or len(email) > MAX_EMAIL_LEN:
+        log.warning("Rejected oversized api_login inputs from %s", request.remote_addr)
+        return jsonify({"ok": False, "error": "بيانات الدخول غير صحيحة"}), 401
     user = authenticate(email, password)
     if not user:
+        # V50 SECURITY (M10): log failed API auth attempts.
+        log.warning("Failed api_login for email=%s from ip=%s",
+                    email, request.remote_addr)
         return jsonify({"ok": False, "error": "بيانات الدخول غير صحيحة"}), 401
     if email_verification_is_enabled() and user["role"] != "admin" and not user.get("email_verified"):
         return jsonify({"ok": False, "error": "يجب تفعيل بريدك الإلكتروني قبل تسجيل الدخول"}), 403
@@ -1729,6 +1863,14 @@ def api_register():
     phone = (data.get("phone") or "").strip()
     password = data.get("password") or ""
     password_confirm = data.get("password_confirm") or ""
+    # V50 SECURITY (HD): cap input lengths before password hashing.
+    if (
+        len(password) > MAX_PASSWORD_LEN
+        or len(email) > MAX_EMAIL_LEN
+        or len(name) > MAX_NAME_LEN
+        or len(phone) > MAX_PHONE_LEN
+    ):
+        return jsonify({"ok": False, "error": "أحد الحقول تجاوز الحد المسموح به"}), 400
     if not name or not email or not password:
         return jsonify({"ok": False, "error": "أكمل البيانات المطلوبة"}), 400
     if password != password_confirm:
@@ -1776,7 +1918,8 @@ def api_orders():
     except Exception:
         return jsonify({"ok": False, "error": "الباقة غير صحيحة"}), 400
     player_id = (data.get("player_id") or "").strip()
-    if len(player_id) < 3:
+    # V50 SECURITY (C1): bound player_id length (see checkout).
+    if len(player_id) < 3 or len(player_id) > MAX_PLAYER_ID_LEN:
         return jsonify({"ok": False, "error": "معرف اللاعب غير صحيح"}), 400
 
     product = get_product(product_id)
@@ -1878,6 +2021,7 @@ def admin_games():
 @app.route("/admin/games/add", methods=["POST"])
 @login_required
 @admin_required
+@(limiter.limit("20 per minute") if limiter else (lambda f: f))
 def admin_add_game():
     provider = request.form.get("provider", "").strip()
     game_key = request.form.get("game_key", "").strip().lower().replace(" ", "_")
@@ -2055,6 +2199,7 @@ def admin_deposits():
 @app.route("/admin/deposit/<int:deposit_id>/<action>", methods=["POST"])
 @login_required
 @admin_required
+@(limiter.limit("60 per minute") if limiter else (lambda f: f))
 def admin_deposit_action(deposit_id, action):
     if action == "approve":
         ok = update_deposit(deposit_id, "approved")
@@ -2272,4 +2417,10 @@ if __name__ == "__main__":
         log.warning("ADMIN_PASSWORD missing/weak — using temporary dev password 'changeme123!'. Override via .env.")
         _admin_pw_dev = "changeme123!"
     seed_admin(os.getenv("ADMIN_EMAIL", "admin@example.com"), _admin_pw_dev)
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # V50 SECURITY (CB): never turn on the Werkzeug debugger outside explicit
+    # development. The debugger console is a remote code execution surface
+    # if any attacker can reach it.
+    _debug = os.getenv("FLASK_ENV", "development").lower() == "development"
+    if os.getenv("FLASK_ENV") == "production":
+        _debug = False
+    app.run(host="0.0.0.0", port=5000, debug=_debug)

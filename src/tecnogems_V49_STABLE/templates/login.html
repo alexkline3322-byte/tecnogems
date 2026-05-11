@@ -6,14 +6,14 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
     <label>{{ t("email") }}</label>
-    <input name="email" id="login-email" type="email" required autocomplete="email"
+    <input name="email" id="login-email" type="email" required maxlength="120" autocomplete="email"
            value="{{ prefill_email or '' }}"
            placeholder="example@email.com">
     <span class="field-error" id="err-email"></span>
 
     <label style="margin-top:14px">{{ t("password") }}</label>
     <div class="pw-wrap">
-      <input name="password" id="login-password" type="password" required autocomplete="current-password"
+      <input name="password" id="login-password" type="password" required maxlength="128" autocomplete="current-password"
              placeholder="••••••••">
       <button type="button" class="pw-toggle" onclick="togglePw('login-password','eye-show-lp','eye-hide-lp')" aria-label="إظهار كلمة المرور">
         <svg id="eye-show-lp" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>

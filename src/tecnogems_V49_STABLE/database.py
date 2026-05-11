@@ -4,6 +4,7 @@ import json
 import sqlite3
 import time
 import threading
+import secrets
 from werkzeug.security import generate_password_hash, check_password_hash
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "site.db")
@@ -1065,7 +1066,13 @@ def create_order(user, product, game, player_id):
     we roll back + raise InsufficientBalance.
     """
     now = int(time.time())
-    order_code = f"ORD{now}{user['id']}"
+    # V50 SECURITY (C2): order_code was previously f"ORD{now}{user_id}" which
+    # is trivially predictable — an attacker who knows a user_id and the rough
+    # time of order creation can guess order codes and probe any endpoint that
+    # treats the code as a bearer credential. Use a cryptographically random
+    # token instead. Collision risk at 10 bytes (~13 chars) is negligible
+    # (2^80 keyspace) and orders.order_code has a UNIQUE constraint.
+    order_code = f"ORD{secrets.token_urlsafe(10)}"
     final_price = _product_price_usd(product)
     product_label = translate_product_name(product.get("display_name") or product.get("name") or "")
     conn = connect()
@@ -1269,7 +1276,9 @@ def create_deposit(user_id, amount, method_id, proof, amount_usd=None):
     if amount_usd is None:
         amount_usd = amount
     now = int(time.time())
-    code = f"DEP{now}{user_id}"
+    # V50 SECURITY (CA): same predictability issue as order_code. Use a
+    # random token so deposit codes cannot be enumerated by attackers.
+    code = f"DEP{secrets.token_urlsafe(10)}"
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
@@ -1364,8 +1373,17 @@ def list_orders_for_auto_refresh():
 
 
 def get_order_public(order_id, user_id=None):
+    # V50 SECURITY (CC): previously `user_id=None` would return the order
+    # regardless of ownership — a latent IDOR if any caller forgot to pass
+    # user_id. Require an explicit owner id (or admin sentinel) to look up.
+    # Pass user_id="*" from admin code paths when cross-user access is
+    # intentionally required.
     conn = connect()
     if user_id is None:
+        conn.close()
+        raise ValueError("get_order_public requires an explicit user_id; "
+                         "use user_id='*' for admin access")
+    if user_id == "*":
         row = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
     else:
         row = conn.execute("SELECT * FROM orders WHERE id=? AND user_id=?", (order_id, user_id)).fetchone()

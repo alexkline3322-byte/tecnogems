@@ -39,7 +39,7 @@
   <form method="post" id="checkout-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>{{ t("player_id") }}</label>
-    <input name="player_id" id="player_id" required minlength="3"
+    <input name="player_id" id="player_id" required minlength="3" maxlength="64"
            placeholder="{{ t('example_id') }}" autocomplete="off"
            oninput="clearPlayerErr()">
     <span class="field-error" id="err-player-id"></span>
