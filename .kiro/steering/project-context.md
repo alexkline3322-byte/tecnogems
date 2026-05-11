@@ -67,7 +67,7 @@ tecnogems/
 | **V50.2** | [#2](https://github.com/alexkline3322-byte/tecnogems/pull/2) | 22 إصلاح متوسط/منخفض (Medium + Low) | `V50_2_SECURITY_FIXES.md` |
 | **A** | [#4](https://github.com/alexkline3322-byte/tecnogems/pull/4) | تنظيف هيكل المستودع: نقل الكود من `src/tecnogems_V49_STABLE/` إلى الجذر + حذف الـ zip القديم | — |
 | **B** | [#5](https://github.com/alexkline3322-byte/tecnogems/pull/5) | 2FA (TOTP) لحسابات الأدمن: pyotp + QR + 10 رموز استرداد + `admin_2fa_required` switch | `security_2fa.py` |
-| **C** | _(قيد الفتح على فرع `chore/ci-tests`)_ | Tests + CI: 67 اختبار pytest + GitHub Actions (pytest + bandit + pip-audit) | `tests/`, `.github/workflows/ci.yml`, `V51_TESTS_CI.md` |
+| **C** | [#6](https://github.com/alexkline3322-byte/tecnogems/pull/6) | Tests + CI: 67 اختبار pytest + GitHub Actions (pytest + bandit + pip-audit) | `tests/`, `.github/workflows/ci.yml`, `V51_TESTS_CI.md` |
 
 **أبرز ما طُبِّق أمنياً:**
 - `secrets.token_urlsafe` لـ `order_code` و `deposit_code`
@@ -100,7 +100,7 @@ tecnogems/
   - ~~حارس 2FA داخل `admin_required` (session["admin_2fa_verified"])~~
   - ~~setting `admin_2fa_required` (0/1) للتدرج في الإجبار~~
 
-- [x] ~~**C. Tests + CI**~~ ✅ _(PR على فرع `chore/ci-tests`)_
+- [x] ~~**C. Tests + CI**~~ ✅ [PR #6](https://github.com/alexkline3322-byte/tecnogems/pull/6)
   - ~~`tests/` + pytest: auth, security, admin_2fa, orders_wallet (67 اختبار)~~
   - ~~`.github/workflows/ci.yml`: pytest + bandit (SAST) + pip-audit (CVE)~~
 
