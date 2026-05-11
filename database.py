@@ -1240,15 +1240,19 @@ def search_users(q=None):
         extra_ids = []
         if str(q).isdigit():
             extra_ids.append(int(q))
-        rows = [dict(r) for r in conn.execute("""
-            SELECT DISTINCT u.id,u.name,u.email,u.phone,u.role,u.balance,u.active,u.email_verified,u.created_at
-            FROM users u
-            LEFT JOIN orders o ON o.user_id=u.id
-            WHERE u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? OR o.player_id LIKE ?
-            """ + (" OR u.id=?" if extra_ids else "") + """
-            ORDER BY u.id DESC
-            LIMIT 300
-        """, args + [like] + extra_ids).fetchall()]
+        # B608 suppressed: only a STATIC fragment (" OR u.id=?") may be
+        # appended below; all user input is bound via parameters.
+        _sql = (
+            "SELECT DISTINCT u.id,u.name,u.email,u.phone,u.role,u.balance,"
+            "u.active,u.email_verified,u.created_at "
+            "FROM users u "
+            "LEFT JOIN orders o ON o.user_id=u.id "
+            "WHERE u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? "
+            "OR o.player_id LIKE ?"
+            + (" OR u.id=?" if extra_ids else "")
+            + " ORDER BY u.id DESC LIMIT 300"
+        )
+        rows = [dict(r) for r in conn.execute(_sql, args + [like] + extra_ids).fetchall()]  # nosec B608
     else:
         rows = [dict(r) for r in conn.execute("SELECT id,name,email,phone,role,balance,active,email_verified,created_at FROM users ORDER BY id DESC LIMIT 300").fetchall()]
     conn.close()

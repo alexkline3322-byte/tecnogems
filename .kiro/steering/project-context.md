@@ -67,6 +67,7 @@ tecnogems/
 | **V50.2** | [#2](https://github.com/alexkline3322-byte/tecnogems/pull/2) | 22 إصلاح متوسط/منخفض (Medium + Low) | `V50_2_SECURITY_FIXES.md` |
 | **A** | [#4](https://github.com/alexkline3322-byte/tecnogems/pull/4) | تنظيف هيكل المستودع: نقل الكود من `src/tecnogems_V49_STABLE/` إلى الجذر + حذف الـ zip القديم | — |
 | **B** | [#5](https://github.com/alexkline3322-byte/tecnogems/pull/5) | 2FA (TOTP) لحسابات الأدمن: pyotp + QR + 10 رموز استرداد + `admin_2fa_required` switch | `security_2fa.py` |
+| **C** | [#6](https://github.com/alexkline3322-byte/tecnogems/pull/6) | Tests + CI: 67 اختبار pytest + GitHub Actions (pytest + bandit + pip-audit) | `tests/`, `.github/workflows/ci.yml`, `V51_TESTS_CI.md` |
 
 **أبرز ما طُبِّق أمنياً:**
 - `secrets.token_urlsafe` لـ `order_code` و `deposit_code`
@@ -99,9 +100,9 @@ tecnogems/
   - ~~حارس 2FA داخل `admin_required` (session["admin_2fa_verified"])~~
   - ~~setting `admin_2fa_required` (0/1) للتدرج في الإجبار~~
 
-- [ ] **C. Tests + CI** *(PR كبير — لكن الأعلى قيمة)*
-  - `tests/` مع pytest: auth, orders, wallet, admin, security
-  - `.github/workflows/ci.yml`: pytest + bandit + pip-audit
+- [x] ~~**C. Tests + CI**~~ ✅ [PR #6](https://github.com/alexkline3322-byte/tecnogems/pull/6)
+  - ~~`tests/` + pytest: auth, security, admin_2fa, orders_wallet (67 اختبار)~~
+  - ~~`.github/workflows/ci.yml`: pytest + bandit (SAST) + pip-audit (CVE)~~
 
 ### أولوية متوسطة
 
@@ -147,6 +148,9 @@ tecnogems/
 | **`FLASK_ENV=production` يفعّل كل السلوكيات الصارمة** | قرار مركزي: debugger off, CSRF strict, إلخ. |
 | **Admin 2FA opt-in ثم forced** | `admin_2fa_required` setting يبدأ `"0"` (اختياري) ثم يُرفع إلى `"1"` بعد تسجيل كل admin. يتجنّب lockout فوري عند النشر. |
 | **Backup codes PBKDF2-hashed** | DB leak لا يكشف رموز الاسترداد غير المستخدمة. الرموز one-time، iteration ثابت على كل الـ 10 لتجنب timing oracle. |
+| **pip-audit advisory-only في CI** | الاعتماديات المثبّتة تحوي 21 CVE (flask 3.0.3, werkzeug 3.0.3, authlib 1.3.2, pillow 10.4.0, …). بدلاً من تعطيل CI، شغّلنا الفحص كـ `continue-on-error` للرؤية بدون حجب الـ PRs. PR لاحق يخصّص لترقية الاعتماديات. |
+| **bandit بعتبة `-ll -ii`** | يبلّغ فقط عن القضايا MEDIUM+ من ناحيتَي الشدة والثقة. يحجب ضوضاء Low-severity التي تراكمت تاريخياً (sqlite pragmas, assert stmts, إلخ). |
+| **اختبارات تستخدم DB منفصلة لكل test** | `function` scope + `tmp_path` + monkeypatch على `database.DB_PATH`. يزيد الزمن قليلاً (~0.5 ثانية/اختبار) لكنه يضمن عزلاً كاملاً. |
 
 ## 7) متغيرات البيئة المهمة
 
@@ -210,9 +214,13 @@ gunicorn -k gthread -w 2 --threads 4 -b 0.0.0.0:8000 wsgi:app
 | Admin 2FA routes + guard | `app.py` — `admin_2fa_*` + inside `admin_required` |
 | Admin 2FA templates | `templates/admin/2fa_setup.html`, `2fa_challenge.html`, `2fa_backup_codes.html` |
 | Robots.txt (حجب /admin و /api) | `static/robots.txt` |
+| Test fixtures (app + DB isolation) | `tests/conftest.py` |
+| Pytest config | `pytest.ini` |
+| Dev / CI dependencies | `requirements-dev.txt` |
+| CI workflow (pytest + bandit + pip-audit) | `.github/workflows/ci.yml` |
 
 ## 10) آخر تحديث 📌
 
-- **Commit:** (سيُحدَّث بعد دمج PR #5) — Branch: `feat/admin-2fa`
-- **الحالة:** V50.2 + البند A + البند B مكتمل. 2FA جاهز للاستخدام على حسابات الأدمن. المفتاح `admin_2fa_required` افتراضياً "0" (اختياري) حتى يُفعّل كل admin حسابه، ثم يُرفع إلى "1".
-- **التالي:** البند **C** (Tests + CI — الأعلى قيمة) أو **D** (Sentry + JSON logs + audit table).
+- **Commit:** (سيُحدَّث بعد دمج PR الخاص بالبند C) — Branch: `chore/ci-tests`
+- **الحالة:** V50.2 + البنود A + B + **C** مكتملة. 67 اختبار pytest جاهز + CI يعمل على كل PR (pytest إلزامي، bandit إلزامي، pip-audit استشاري).
+- **التالي:** البند **D** (Sentry + JSON logs + audit table) — يضيف رؤية إلى أخطاء الإنتاج وسجل تدقيق منظم في قاعدة البيانات.
