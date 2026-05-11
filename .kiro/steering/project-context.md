@@ -68,6 +68,7 @@ tecnogems/
 | **A** | [#4](https://github.com/alexkline3322-byte/tecnogems/pull/4) | تنظيف هيكل المستودع: نقل الكود من `src/tecnogems_V49_STABLE/` إلى الجذر + حذف الـ zip القديم | — |
 | **B** | [#5](https://github.com/alexkline3322-byte/tecnogems/pull/5) | 2FA (TOTP) لحسابات الأدمن: pyotp + QR + 10 رموز استرداد + `admin_2fa_required` switch | `security_2fa.py` |
 | **C** | [#6](https://github.com/alexkline3322-byte/tecnogems/pull/6) | Tests + CI: 67 اختبار pytest + GitHub Actions (pytest + bandit + pip-audit) | `tests/`, `.github/workflows/ci.yml`, `V51_TESTS_CI.md` |
+| **D** | _pending_ | Sentry + JSON logs + `audit_log` table + `log_audit()` helper (11 admin actions مُنتقَلة) | `audit.py`, `V52_AUDIT_SENTRY.md` |
 
 **أبرز ما طُبِّق أمنياً:**
 - `secrets.token_urlsafe` لـ `order_code` و `deposit_code`
@@ -106,10 +107,13 @@ tecnogems/
 
 ### أولوية متوسطة
 
-- [ ] **D. Sentry + Structured Logging + Audit Table**
-  - `sentry-sdk[flask]` + `SENTRY_DSN`
-  - JSON logs عبر `python-json-logger`
-  - جدول `audit_log(id, ts, actor_id, action, target, old, new, ip, ua)`
+- [x] ~~**D. Sentry + Structured Logging + Audit Table**~~ ✅ _pending PR_
+  - ~~`sentry-sdk[flask]` + `SENTRY_DSN` + breadcrumbs + scrubbing hook~~
+  - ~~JSON logs عبر `python-json-logger` (مفعَّل بـ `LOG_JSON=1`)~~
+  - ~~جدول `audit_log(id, ts, action, actor_id, actor_email, target_type, target_id, ip, user_agent, old_value, new_value, metadata)`~~
+  - ~~`audit.log_audit()` helper يكتب DB + logger + Sentry breadcrumb مع redaction~~
+  - ~~11 موقع ADMIN_* مُنتقَل من `log.warning` إلى `log_audit()`~~
+  - ~~21 اختبار جديد (المجموع 88)~~
 
 - [ ] **E. ترحيل SQLite → PostgreSQL**
   - استبدال `sqlite3` بـ `psycopg2` أو SQLAlchemy
@@ -151,6 +155,9 @@ tecnogems/
 | **pip-audit advisory-only في CI** | الاعتماديات المثبّتة تحوي 21 CVE (flask 3.0.3, werkzeug 3.0.3, authlib 1.3.2, pillow 10.4.0, …). بدلاً من تعطيل CI، شغّلنا الفحص كـ `continue-on-error` للرؤية بدون حجب الـ PRs. PR لاحق يخصّص لترقية الاعتماديات. |
 | **bandit بعتبة `-ll -ii`** | يبلّغ فقط عن القضايا MEDIUM+ من ناحيتَي الشدة والثقة. يحجب ضوضاء Low-severity التي تراكمت تاريخياً (sqlite pragmas, assert stmts, إلخ). |
 | **اختبارات تستخدم DB منفصلة لكل test** | `function` scope + `tmp_path` + monkeypatch على `database.DB_PATH`. يزيد الزمن قليلاً (~0.5 ثانية/اختبار) لكنه يضمن عزلاً كاملاً. |
+| **`audit_log` جدول منفصل append-only مع JSON blobs لـ old/new** | فصل الاهتمامات + مرونة schema (لا migration مع كل نوع حدث جديد). Redaction مركزية داخل `audit.log_audit()` قبل أن تصل القيم للـ DB. |
+| **Sentry + JSON logs opt-in بالكامل** | `SENTRY_DSN` فارغ / `LOG_JSON` غير مضبوط ⇒ سلوك V51 السابق بدقّة. يتيح rollout تدريجياً بدون مخاطر. |
+| **`log_audit()` لا ترفع استثناءً أبداً** | الرصد يجب ألا يكسر الطلب. فشل الـ DB أو Sentry يُبتَلَع بـ try/except مع تحذير في logger. |
 
 ## 7) متغيرات البيئة المهمة
 
@@ -167,6 +174,13 @@ SESSION_LIFETIME_DAYS=7
 
 # بنية تحتية (اختيارية)
 REDIS_URL=redis://localhost:6379/0   # للـ RQ + Flask-Limiter
+
+# رصد وأخطاء (اختيارية — V52)
+SENTRY_DSN=                          # فعّل بالربط بمشروع Sentry
+SENTRY_TRACES_SAMPLE_RATE=0          # 0..1 — 0.1 بداية مقترحة للإنتاج
+SENTRY_ENVIRONMENT=                  # افتراضياً FLASK_ENV
+SENTRY_RELEASE=                      # وسم الإصدار
+LOG_JSON=                            # 1/true لتفعيل JSON logs
 
 # مزوِّدون
 G2BULK_API_KEY=...
@@ -213,6 +227,8 @@ gunicorn -k gthread -w 2 --threads 4 -b 0.0.0.0:8000 wsgi:app
 | Admin 2FA helpers (TOTP, backup codes) | `security_2fa.py` |
 | Admin 2FA routes + guard | `app.py` — `admin_2fa_*` + inside `admin_required` |
 | Admin 2FA templates | `templates/admin/2fa_setup.html`, `2fa_challenge.html`, `2fa_backup_codes.html` |
+| Audit helper (redaction + Sentry + JSON logs) | `audit.py` — `log_audit()`, `init_sentry()`, `init_json_logging()` |
+| Audit DB helpers | `database.py` — `insert_audit_log()`, `list_audit_logs()`, `count_audit_logs()` |
 | Robots.txt (حجب /admin و /api) | `static/robots.txt` |
 | Test fixtures (app + DB isolation) | `tests/conftest.py` |
 | Pytest config | `pytest.ini` |
@@ -221,6 +237,6 @@ gunicorn -k gthread -w 2 --threads 4 -b 0.0.0.0:8000 wsgi:app
 
 ## 10) آخر تحديث 📌
 
-- **Commit:** (سيُحدَّث بعد دمج PR الخاص بالبند C) — Branch: `chore/ci-tests`
-- **الحالة:** V50.2 + البنود A + B + **C** مكتملة. 67 اختبار pytest جاهز + CI يعمل على كل PR (pytest إلزامي، bandit إلزامي، pip-audit استشاري).
-- **التالي:** البند **D** (Sentry + JSON logs + audit table) — يضيف رؤية إلى أخطاء الإنتاج وسجل تدقيق منظم في قاعدة البيانات.
+- **Commit:** (سيُحدَّث بعد دمج PR الخاص بالبند D) — Branch: `feat/v52-audit-sentry-logging`
+- **الحالة:** V50.2 + البنود A + B + C + **D** (pending PR) مكتملة. 88 اختبار pytest (67 + 21 جديد للـ audit). Sentry + JSON logs + audit_log table + log_audit() helper — كلها opt-in عبر env.
+- **التالي:** البند **E** (ترحيل SQLite → PostgreSQL) — استبدال `sqlite3` بـ `psycopg2`/SQLAlchemy + Alembic migrations.

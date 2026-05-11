@@ -15,3 +15,8 @@ rq==1.16.2
 # V51 (task B): TOTP 2FA for admin accounts + QR code rendering
 pyotp==2.9.0
 qrcode==7.4.2
+# V52 (task D): structured logging + error tracking.
+# Both are activated lazily — absence of SENTRY_DSN / LOG_JSON=1 leaves the
+# legacy logging format untouched, so production rollout can be staged.
+sentry-sdk[flask]==2.14.0
+python-json-logger==2.0.7
