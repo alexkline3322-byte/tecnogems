@@ -20,3 +20,7 @@ qrcode==7.4.2
 # legacy logging format untouched, so production rollout can be staged.
 sentry-sdk[flask]==2.14.0
 python-json-logger==2.0.7
+# V53 (PR #17): HTML sanitiser used by sanitize.py for admin input hardening.
+# sanitize.py imports bleach but the dep was never added to requirements,
+# so CI fails on a clean runner. Pin to a stable 6.x.
+bleach==6.2.0
