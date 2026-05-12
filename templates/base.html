@@ -168,6 +168,13 @@
       <a href="{{ url_for('register') }}">{{ t("register") }}</a>
     </div>
     <div class="v43-footer-col">
+      <h4>{{ "Legal" if is_en else "قانوني" }}</h4>
+      <a href="{{ url_for('privacy') }}">{{ "Privacy Policy" if is_en else "سياسة الخصوصية" }}</a>
+      <a href="{{ url_for('terms') }}">{{ "Terms of Service" if is_en else "شروط الاستخدام" }}</a>
+      <a href="{{ url_for('refund') }}">{{ "Refund Policy" if is_en else "سياسة الاسترجاع" }}</a>
+      <a href="{{ url_for('contact') }}">{{ "Contact Us" if is_en else "اتصل بنا" }}</a>
+    </div>
+    <div class="v43-footer-col">
       <h4>{{ "Support" if is_en else "الدعم" }}</h4>
       {% if whatsapp_number %}<a href="https://wa.me/{{ whatsapp_number }}" target="_blank" rel="noopener">WhatsApp</a>{% endif %}
       {% if telegram_username %}<a href="https://t.me/{{ telegram_username }}" target="_blank" rel="noopener">Telegram</a>{% endif %}
