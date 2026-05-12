@@ -176,6 +176,31 @@ try:
 except Exception as _exc:
     log.warning("Blueprint registration failed: %s", _exc)
 
+# V53 CRITICAL: Redis إلزامي في الإنتاج — رفض الإقلاع بدونه.
+# In-memory fallback يخلق ثلاث مشاكل في الإنتاج:
+#   1. Rate-limiter: كل worker حصة منفصلة → bypass عبر توزيع الحمل.
+#   2. RQ queue: فقدان الطلبات عند restart (خسارة مالية فعلية).
+#   3. Settings cache: عدم توافق بين workers لـ30 ثانية.
+_redis_url = os.getenv("REDIS_URL", "").strip()
+if os.getenv("FLASK_ENV") == "production" and not _redis_url:
+    raise RuntimeError(
+        "REDIS_URL is required in production. "
+        "Set it to a valid redis:// URL (Upstash/Railway/Redis Cloud) "
+        "or explicitly set FLASK_ENV=development for local testing."
+    )
+
+# V53: ping Redis at boot — fail hard in production, warn in dev.
+if _redis_url:
+    try:
+        import redis as _redis_lib
+        _r = _redis_lib.from_url(_redis_url, socket_connect_timeout=3)
+        _r.ping()
+        log.info("Redis reachable at %s", _redis_url.split("@")[-1])
+    except Exception as exc:
+        if os.getenv("FLASK_ENV") == "production":
+            raise RuntimeError(f"Cannot reach REDIS_URL: {exc}") from exc
+        log.warning("Redis unreachable (dev mode — continuing): %s", exc)
+
 # Rate limiting
 try:
     from flask_limiter import Limiter
@@ -184,7 +209,6 @@ try:
     # rate limits are shared across gunicorn workers and survive restarts.
     # Falls back to in-memory when Redis is unavailable (dev or single-process).
     _limiter_kwargs = {"app": app, "default_limits": []}
-    _redis_url = os.getenv("REDIS_URL", "").strip()
     if _redis_url:
         _limiter_kwargs["storage_uri"] = _redis_url
         _limiter_kwargs["strategy"] = "fixed-window"
