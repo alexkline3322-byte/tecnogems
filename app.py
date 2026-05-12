@@ -1290,6 +1290,32 @@ def _block_static_uploads(_ignored):
     abort(403)
 
 
+# --- Legal / info pages ---
+@app.route("/privacy")
+def privacy():
+    return render_template("privacy.html", title="سياسة الخصوصية",
+                           seo_title="سياسة الخصوصية - TecnoGems",
+                           seo_description="سياسة الخصوصية لمنصة TecnoGems لشحن الألعاب.")
+
+@app.route("/terms")
+def terms():
+    return render_template("terms.html", title="شروط الاستخدام",
+                           seo_title="شروط الاستخدام - TecnoGems",
+                           seo_description="شروط استخدام منصة TecnoGems لشحن الألعاب.")
+
+@app.route("/refund")
+def refund():
+    return render_template("refund.html", title="سياسة الاسترجاع",
+                           seo_title="سياسة الاسترجاع - TecnoGems",
+                           seo_description="سياسة الاسترجاع والاستبدال في منصة TecnoGems.")
+
+@app.route("/contact")
+def contact():
+    return render_template("contact.html", title="اتصل بنا",
+                           seo_title="اتصل بنا - TecnoGems",
+                           seo_description="تواصل مع فريق دعم TecnoGems عبر واتساب أو تيليجرام أو البريد الإلكتروني.")
+
+
 @app.route("/")
 @app.route("/legacy")
 def home():
