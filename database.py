@@ -389,6 +389,40 @@ def init_db():
     )
     """)
 
+    # V52 (task D): structured audit trail for admin + privileged actions.
+    # Complements the existing log.warning("ADMIN_*") feed by giving us a
+    # queryable on-disk record: who did what, to which target, when, and
+    # with what before/after state. Rows are append-only; no UPDATE or
+    # DELETE is exposed by the public API.
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        actor_id INTEGER,
+        actor_email TEXT,
+        target_type TEXT,
+        target_id TEXT,
+        ip TEXT,
+        user_agent TEXT,
+        old_value TEXT,
+        new_value TEXT,
+        metadata TEXT
+    )
+    """)
+    # Index the columns we will query most: recent-first listing, per-actor
+    # history, per-target history, and action-type filtering.
+    for _q in (
+        "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id, ts DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_target ON audit_log(target_type, target_id)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action, ts DESC)",
+    ):
+        try:
+            cur.execute(_q)
+        except Exception:
+            pass
+
 
     default_methods = [
         ("usdt", "USDT (TRC20)", "🪙", "ضع عنوان USDT هنا", "حوّل بالدولار إلى العنوان أدناه ثم أرسل إثبات الدفع.", "USD"),
@@ -1660,3 +1694,123 @@ def attach_generated_posters():
             updated += 1
     conn.commit(); conn.close()
     return updated
+
+
+# ============================================================
+# V52 (task D): Audit log helpers
+# ============================================================
+def insert_audit_log(
+    action,
+    actor_id=None,
+    actor_email=None,
+    target_type=None,
+    target_id=None,
+    ip=None,
+    user_agent=None,
+    old_value=None,
+    new_value=None,
+    metadata=None,
+):
+    """Append a row to ``audit_log``.
+
+    All parameters are optional except ``action``. Callers should pass
+    already-redacted / already-jsonified strings for ``old_value``,
+    ``new_value``, and ``metadata`` — this function does NOT scrub secrets
+    on its own (that is the responsibility of ``audit.log_audit``).
+
+    Returns the inserted row id, or None if the write failed. Never
+    raises — observability must not break the request that called it.
+    """
+    if not action:
+        return None
+    try:
+        conn = connect()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO audit_log (
+                ts, action, actor_id, actor_email,
+                target_type, target_id, ip, user_agent,
+                old_value, new_value, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(time.time()),
+                str(action)[:120],
+                int(actor_id) if actor_id is not None else None,
+                (actor_email or None) and str(actor_email)[:120],
+                (target_type or None) and str(target_type)[:60],
+                (target_id or None) and str(target_id)[:120],
+                (ip or None) and str(ip)[:64],
+                user_agent,
+                old_value,
+                new_value,
+                metadata,
+            ),
+        )
+        row_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return row_id
+    except Exception:
+        # Best effort: never propagate DB errors to the caller.
+        try:
+            conn.close()  # type: ignore[name-defined]
+        except Exception:
+            pass
+        return None
+
+
+def list_audit_logs(limit=200, action=None, actor_id=None, target_type=None, target_id=None):
+    """Fetch recent audit rows, newest first. Admin-only consumers.
+
+    All filters are optional; when omitted, returns the last ``limit`` rows
+    across the whole table. ``limit`` is clamped to [1, 1000] to keep admin
+    pages responsive.
+    """
+    try:
+        limit = max(1, min(int(limit or 200), 1000))
+    except Exception:
+        limit = 200
+
+    clauses = []
+    params = []
+    if action:
+        clauses.append("action = ?")
+        params.append(str(action)[:120])
+    if actor_id is not None:
+        clauses.append("actor_id = ?")
+        params.append(int(actor_id))
+    if target_type:
+        clauses.append("target_type = ?")
+        params.append(str(target_type)[:60])
+    if target_id:
+        clauses.append("target_id = ?")
+        params.append(str(target_id)[:120])
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    sql = (
+        "SELECT id, ts, action, actor_id, actor_email, target_type, target_id, "
+        "       ip, user_agent, old_value, new_value, metadata "
+        f"FROM audit_log {where} ORDER BY ts DESC, id DESC LIMIT ?"
+    )
+    params.append(limit)
+
+    try:
+        conn = connect()
+        rows = [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def count_audit_logs():
+    """Return total number of audit rows (for pagination hints)."""
+    try:
+        conn = connect()
+        row = conn.execute("SELECT COUNT(*) AS n FROM audit_log").fetchone()
+        conn.close()
+        return int(row["n"]) if row else 0
+    except Exception:
+        return 0

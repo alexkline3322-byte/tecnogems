@@ -64,6 +64,13 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 log = logging.getLogger("tecnogems")
 
+# V52 (task D): observability — Sentry + JSON logs + audit trail.
+# All three are opt-in via environment. Must be imported BEFORE any
+# @app.route so Sentry can wrap the Flask integration cleanly.
+from audit import init_sentry, init_json_logging, log_audit
+init_json_logging()  # respects LOG_JSON env
+init_sentry()        # respects SENTRY_DSN env
+
 app = Flask(__name__)
 
 _secret = os.getenv("SECRET_KEY", "")
@@ -1799,15 +1806,29 @@ def admin_2fa_confirm():
     secret = user.get("totp_secret")
     code = (request.form.get("code") or "").strip()
     if not secret or not verify_totp(secret, code):
-        log.warning("ADMIN_2FA_SETUP_FAIL user_id=%s email=%s ip=%s",
-                    user["id"], user["email"], request.remote_addr)
+        log_audit(
+            "ADMIN_2FA_SETUP_FAIL",
+            actor_id=user["id"],
+            actor_email=user["email"],
+            target_type="user",
+            target_id=user["id"],
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent"),
+        )
         flash("الرمز غير صحيح أو انتهت صلاحيته. حاول مرة أخرى.", "danger")
         return redirect(url_for("admin_2fa_setup"))
     plain, hashed = generate_backup_codes()
     enable_user_totp(user["id"], serialize_backup_codes(hashed))
     session["admin_2fa_verified"] = True
-    log.warning("ADMIN_2FA_ENABLED user_id=%s email=%s ip=%s",
-                user["id"], user["email"], request.remote_addr)
+    log_audit(
+        "ADMIN_2FA_ENABLED",
+        actor_id=user["id"],
+        actor_email=user["email"],
+        target_type="user",
+        target_id=user["id"],
+        ip=request.remote_addr,
+        user_agent=request.headers.get("User-Agent"),
+    )
     # Show backup codes ONCE. No way to retrieve them later — only regenerate.
     return render_template(
         "admin/2fa_backup_codes.html",
@@ -1838,8 +1859,17 @@ def admin_2fa_challenge():
         # 1) TOTP path
         if verify_totp(user.get("totp_secret") or "", submitted):
             session["admin_2fa_verified"] = True
-            log.info("ADMIN_2FA_PASS method=totp user_id=%s ip=%s",
-                     user["id"], request.remote_addr)
+            log_audit(
+                "ADMIN_2FA_PASS",
+                actor_id=user["id"],
+                actor_email=user["email"],
+                target_type="user",
+                target_id=user["id"],
+                ip=request.remote_addr,
+                user_agent=request.headers.get("User-Agent"),
+                metadata={"method": "totp"},
+                level="info",
+            )
             return redirect(safe_next_url("admin_dashboard"))
         # 2) Backup code path (one-time)
         codes = deserialize_backup_codes(user.get("totp_backup_codes"))
@@ -1847,16 +1877,28 @@ def admin_2fa_challenge():
         if remaining is not None:
             update_user_backup_codes(user["id"], serialize_backup_codes(remaining))
             session["admin_2fa_verified"] = True
-            log.warning(
-                "ADMIN_2FA_PASS method=backup_code user_id=%s email=%s "
-                "remaining=%d ip=%s",
-                user["id"], user["email"], len(remaining), request.remote_addr
+            log_audit(
+                "ADMIN_2FA_PASS",
+                actor_id=user["id"],
+                actor_email=user["email"],
+                target_type="user",
+                target_id=user["id"],
+                ip=request.remote_addr,
+                user_agent=request.headers.get("User-Agent"),
+                metadata={"method": "backup_code", "remaining": len(remaining)},
             )
             if len(remaining) <= 2:
                 flash(f"تحذير: تبقى {len(remaining)} رموز استرداد فقط. أعد توليدها قريبًا.", "warning")
             return redirect(safe_next_url("admin_dashboard"))
-        log.warning("ADMIN_2FA_FAIL user_id=%s email=%s ip=%s",
-                    user["id"], user["email"], request.remote_addr)
+        log_audit(
+            "ADMIN_2FA_FAIL",
+            actor_id=user["id"],
+            actor_email=user["email"],
+            target_type="user",
+            target_id=user["id"],
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent"),
+        )
         flash("الرمز غير صحيح. حاول مرة أخرى.", "danger")
 
     return render_template(
@@ -1884,8 +1926,15 @@ def admin_2fa_disable():
         return redirect(url_for("admin_dashboard"))
     # Re-authenticate with the password
     if not authenticate(user["email"], password):
-        log.warning("ADMIN_2FA_DISABLE_BAD_PW user_id=%s ip=%s",
-                    user["id"], request.remote_addr)
+        log_audit(
+            "ADMIN_2FA_DISABLE_BAD_PW",
+            actor_id=user["id"],
+            actor_email=user["email"],
+            target_type="user",
+            target_id=user["id"],
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent"),
+        )
         flash("كلمة المرور غير صحيحة.", "danger")
         return redirect(url_for("admin_dashboard"))
     # Require a valid second factor too (TOTP or backup code)
@@ -1894,14 +1943,28 @@ def admin_2fa_disable():
         codes = deserialize_backup_codes(user.get("totp_backup_codes"))
         ok = consume_backup_code(codes, code) is not None
     if not ok:
-        log.warning("ADMIN_2FA_DISABLE_BAD_CODE user_id=%s ip=%s",
-                    user["id"], request.remote_addr)
+        log_audit(
+            "ADMIN_2FA_DISABLE_BAD_CODE",
+            actor_id=user["id"],
+            actor_email=user["email"],
+            target_type="user",
+            target_id=user["id"],
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent"),
+        )
         flash("رمز المصادقة غير صحيح.", "danger")
         return redirect(url_for("admin_dashboard"))
     disable_user_totp(user["id"])
     session.pop("admin_2fa_verified", None)
-    log.warning("ADMIN_2FA_DISABLED user_id=%s email=%s ip=%s",
-                user["id"], user["email"], request.remote_addr)
+    log_audit(
+        "ADMIN_2FA_DISABLED",
+        actor_id=user["id"],
+        actor_email=user["email"],
+        target_type="user",
+        target_id=user["id"],
+        ip=request.remote_addr,
+        user_agent=request.headers.get("User-Agent"),
+    )
     flash("تم إلغاء المصادقة الثنائية. يُنصح بإعادة تفعيلها.", "warning")
     return redirect(url_for("admin_dashboard"))
 
@@ -1918,14 +1981,28 @@ def admin_2fa_regenerate_backup_codes():
         abort(404)
     code = (request.form.get("code") or "").strip()
     if not verify_totp(user.get("totp_secret") or "", code):
-        log.warning("ADMIN_2FA_REGEN_BAD_CODE user_id=%s ip=%s",
-                    user["id"], request.remote_addr)
+        log_audit(
+            "ADMIN_2FA_REGEN_BAD_CODE",
+            actor_id=user["id"],
+            actor_email=user["email"],
+            target_type="user",
+            target_id=user["id"],
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent"),
+        )
         flash("رمز المصادقة غير صحيح.", "danger")
         return redirect(url_for("admin_dashboard"))
     plain, hashed = generate_backup_codes()
     update_user_backup_codes(user["id"], serialize_backup_codes(hashed))
-    log.warning("ADMIN_2FA_BACKUP_CODES_REGEN user_id=%s email=%s ip=%s",
-                user["id"], user["email"], request.remote_addr)
+    log_audit(
+        "ADMIN_2FA_BACKUP_CODES_REGEN",
+        actor_id=user["id"],
+        actor_email=user["email"],
+        target_type="user",
+        target_id=user["id"],
+        ip=request.remote_addr,
+        user_agent=request.headers.get("User-Agent"),
+    )
     return render_template(
         "admin/2fa_backup_codes.html",
         backup_codes=plain,
@@ -1964,22 +2041,33 @@ def admin_order_action(order_id, action):
     admin = current_user()
     if action == "complete":
         update_order(order_id, "completed", order.get("provider_order_id"), "Manual complete")
-        log.warning(
-            "ADMIN_ORDER_COMPLETE admin_id=%s admin_email=%s order_id=%s "
-            "old_status=%s user_id=%s ip=%s",
-            (admin or {}).get("id"), (admin or {}).get("email"),
-            order_id, order.get("status"), order.get("user_id"),
-            request.remote_addr,
+        # V52 (task D): structured audit row — replaces legacy log.warning.
+        log_audit(
+            "ADMIN_ORDER_COMPLETE",
+            actor_id=(admin or {}).get("id"),
+            actor_email=(admin or {}).get("email"),
+            target_type="order",
+            target_id=order_id,
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent"),
+            old={"status": order.get("status")},
+            new={"status": "completed"},
+            metadata={"user_id": order.get("user_id")},
         )
         flash("تم تعليم الطلب كمكتمل", "success")
     elif action == "reject":
         update_order(order_id, "rejected", None, "Manual reject")
-        log.warning(
-            "ADMIN_ORDER_REJECT admin_id=%s admin_email=%s order_id=%s "
-            "old_status=%s user_id=%s amount=%s ip=%s",
-            (admin or {}).get("id"), (admin or {}).get("email"),
-            order_id, order.get("status"), order.get("user_id"),
-            order.get("price"), request.remote_addr,
+        log_audit(
+            "ADMIN_ORDER_REJECT",
+            actor_id=(admin or {}).get("id"),
+            actor_email=(admin or {}).get("email"),
+            target_type="order",
+            target_id=order_id,
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent"),
+            old={"status": order.get("status")},
+            new={"status": "rejected"},
+            metadata={"user_id": order.get("user_id"), "amount": order.get("price")},
         )
         flash("تم رفض الطلب وإرجاع الرصيد", "warning")
     else:
@@ -2033,12 +2121,17 @@ def admin_user_balance(user_id):
     old = get_user_by_id(user_id)
     old_balance = float(old["balance"]) if old else None
     set_user_balance(user_id, new_balance)
-    # V50 SECURITY (HG): audit log every admin balance change.
-    log.warning(
-        "ADMIN_BALANCE_CHANGE admin_id=%s admin_email=%s target_user_id=%s "
-        "old=%s new=%s ip=%s",
-        (admin or {}).get("id"), (admin or {}).get("email"),
-        user_id, old_balance, new_balance, request.remote_addr
+    # V52 (task D): structured audit row — persists to audit_log table.
+    log_audit(
+        "ADMIN_BALANCE_CHANGE",
+        actor_id=(admin or {}).get("id"),
+        actor_email=(admin or {}).get("email"),
+        target_type="user",
+        target_id=user_id,
+        ip=request.remote_addr,
+        user_agent=request.headers.get("User-Agent"),
+        old={"balance": old_balance},
+        new={"balance": new_balance},
     )
     flash("تم تعيين الرصيد الجديد للمستخدم", "success")
     return redirect(safe_next_url("admin_users"))
@@ -2342,12 +2435,17 @@ def admin_add_game():
     else:
         add_custom_game(provider, game_key, name, emoji, image_url, 1)
         set_game_active(provider, game_key, True)
-        # V50.2 MEDIUM: audit log for admin game catalogue changes.
+        # V52 (task D): structured audit row for admin catalogue changes.
         admin = current_user()
-        log.warning(
-            "ADMIN_GAME_ADD admin_id=%s admin_email=%s provider=%s game_key=%s ip=%s",
-            (admin or {}).get("id"), (admin or {}).get("email"),
-            provider, game_key, request.remote_addr,
+        log_audit(
+            "ADMIN_GAME_ADD",
+            actor_id=(admin or {}).get("id"),
+            actor_email=(admin or {}).get("email"),
+            target_type="game",
+            target_id=f"{provider}:{game_key}",
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent"),
+            new={"provider": provider, "game_key": game_key, "name": name},
         )
         flash(f"تمت إضافة/تفعيل اللعبة: {name}", "success")
     return redirect(url_for("admin_games"))
@@ -2401,12 +2499,17 @@ def admin_game_image(provider, game_key):
 
     if image_url:
         update_game_image(provider, game_key, image_url)
-        # V50.2 MEDIUM: audit log for admin image changes.
+        # V52 (task D): structured audit row for admin image changes.
         admin = current_user()
-        log.warning(
-            "ADMIN_GAME_IMAGE admin_id=%s admin_email=%s provider=%s game_key=%s url=%s ip=%s",
-            (admin or {}).get("id"), (admin or {}).get("email"),
-            provider, game_key, image_url, request.remote_addr,
+        log_audit(
+            "ADMIN_GAME_IMAGE",
+            actor_id=(admin or {}).get("id"),
+            actor_email=(admin or {}).get("email"),
+            target_type="game",
+            target_id=f"{provider}:{game_key}",
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent"),
+            new={"image_url": image_url},
         )
         flash("تم تحديث صورة اللعبة", "success")
     else:
