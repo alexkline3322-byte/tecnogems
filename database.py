@@ -5,6 +5,7 @@ import sqlite3
 import time
 import threading
 import secrets
+from contextlib import contextmanager
 from werkzeug.security import generate_password_hash, check_password_hash
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "site.db")
@@ -41,166 +42,183 @@ def connect():
     return conn
 
 
+@contextmanager
+def db_conn():
+    """V53 CRITICAL: context manager that guarantees connection closure even on exceptions.
 
-def ensure_indexes():
+    Use instead of the old pattern:
+        conn = connect()
+        ...
+        conn.close()   # may never execute on exception
+
+    New pattern:
+        with db_conn() as conn:
+            ...   # close is guaranteed
+    """
     conn = connect()
-    indexes = [
-        "CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)",
-        "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)",
-        "CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_orders_user_created ON orders(user_id, created_at DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_orders_status_created ON orders(status, created_at DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_deposits_user_id ON deposits(user_id)",
-        "CREATE INDEX IF NOT EXISTS idx_deposits_status ON deposits(status)",
-        "CREATE INDEX IF NOT EXISTS idx_deposits_user_created ON deposits(user_id, created_at DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
-        "CREATE INDEX IF NOT EXISTS idx_users_email_token ON users(email_token)",
-        "CREATE INDEX IF NOT EXISTS idx_users_reset_token ON users(reset_token)",
-        "CREATE INDEX IF NOT EXISTS idx_products_game ON products(provider, game_key)",
-        "CREATE INDEX IF NOT EXISTS idx_products_game_key ON products(game_key)",
-        "CREATE INDEX IF NOT EXISTS idx_products_active_sort ON products(active, sort_order)",
-        "CREATE INDEX IF NOT EXISTS idx_games_active ON games(active, sort_order)",
-        "CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(key)",
-    ]
-    for q in indexes:
+    try:
+        yield conn
+    finally:
         try:
-            conn.execute(q)
+            conn.close()
         except Exception:
             pass
-    # V42 batch2: wishlist + google oauth columns
-    try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS wishlist (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                provider TEXT NOT NULL,
-                game_key TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, provider, game_key)
-            )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_wishlist_user ON wishlist(user_id, created_at DESC)")
-    except Exception:
-        pass
-    try:
-        conn.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")
-    except Exception:
-        pass
-    try:
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)")
-    except Exception:
-        pass
-    conn.commit()
-    conn.close()
+
+
+
+def ensure_indexes():
+    with db_conn() as conn:
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_user_created ON orders(user_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_status_created ON orders(status, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_deposits_user_id ON deposits(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_deposits_status ON deposits(status)",
+            "CREATE INDEX IF NOT EXISTS idx_deposits_user_created ON deposits(user_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
+            "CREATE INDEX IF NOT EXISTS idx_users_email_token ON users(email_token)",
+            "CREATE INDEX IF NOT EXISTS idx_users_reset_token ON users(reset_token)",
+            "CREATE INDEX IF NOT EXISTS idx_products_game ON products(provider, game_key)",
+            "CREATE INDEX IF NOT EXISTS idx_products_game_key ON products(game_key)",
+            "CREATE INDEX IF NOT EXISTS idx_products_active_sort ON products(active, sort_order)",
+            "CREATE INDEX IF NOT EXISTS idx_games_active ON games(active, sort_order)",
+            "CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(key)",
+        ]
+        for q in indexes:
+            try:
+                conn.execute(q)
+            except Exception:
+                pass
+        # V42 batch2: wishlist + google oauth columns
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS wishlist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    provider TEXT NOT NULL,
+                    game_key TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, provider, game_key)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_wishlist_user ON wishlist(user_id, created_at DESC)")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")
+        except Exception:
+            pass
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)")
+        except Exception:
+            pass
+        conn.commit()
 
 
 # ============================================================
 # V42 batch2: Wishlist helpers
 # ============================================================
 def wishlist_list(user_id):
-    conn = connect()
-    rows = [dict(r) for r in conn.execute("""
-        SELECT w.provider, w.game_key, w.created_at,
-               g.name AS name, g.image_url AS image_url
-        FROM wishlist w
-        LEFT JOIN games g ON g.provider=w.provider AND g.game_key=w.game_key
-        WHERE w.user_id=?
-        ORDER BY w.created_at DESC
-    """, (user_id,)).fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        return [dict(r) for r in conn.execute("""
+            SELECT w.provider, w.game_key, w.created_at,
+                   g.name AS name, g.image_url AS image_url
+            FROM wishlist w
+            LEFT JOIN games g ON g.provider=w.provider AND g.game_key=w.game_key
+            WHERE w.user_id=?
+            ORDER BY w.created_at DESC
+        """, (user_id,)).fetchall()]
 
 
 def wishlist_has(user_id, provider, game_key):
-    conn = connect()
-    row = conn.execute(
-        "SELECT 1 FROM wishlist WHERE user_id=? AND provider=? AND game_key=?",
-        (user_id, provider, game_key)
-    ).fetchone()
-    conn.close()
-    return bool(row)
+    with db_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM wishlist WHERE user_id=? AND provider=? AND game_key=?",
+            (user_id, provider, game_key)
+        ).fetchone()
+        return bool(row)
 
 
 def wishlist_toggle(user_id, provider, game_key):
     """returns True if added, False if removed."""
-    conn = connect()
-    cur = conn.execute(
-        "SELECT id FROM wishlist WHERE user_id=? AND provider=? AND game_key=?",
-        (user_id, provider, game_key)
-    ).fetchone()
-    if cur:
-        conn.execute("DELETE FROM wishlist WHERE id=?", (cur["id"],))
-        added = False
-    else:
-        conn.execute(
-            "INSERT INTO wishlist(user_id, provider, game_key) VALUES (?,?,?)",
+    with db_conn() as conn:
+        cur = conn.execute(
+            "SELECT id FROM wishlist WHERE user_id=? AND provider=? AND game_key=?",
             (user_id, provider, game_key)
-        )
-        added = True
-    conn.commit()
-    conn.close()
-    return added
+        ).fetchone()
+        if cur:
+            conn.execute("DELETE FROM wishlist WHERE id=?", (cur["id"],))
+            added = False
+        else:
+            conn.execute(
+                "INSERT INTO wishlist(user_id, provider, game_key) VALUES (?,?,?)",
+                (user_id, provider, game_key)
+            )
+            added = True
+        conn.commit()
+        return added
 
 
 def search_suggest(q, limit=8):
     """Lightweight autocomplete across games (name) + product groups (label)."""
-    conn = connect()
-    qlike = f"%{q}%"
-    games = [dict(r) for r in conn.execute("""
-        SELECT 'game' AS kind, provider, game_key, name AS label, image_url
-        FROM games
-        WHERE active=1 AND name LIKE ? COLLATE NOCASE
-        ORDER BY name LIMIT ?
-    """, (qlike, limit)).fetchall()]
-    remaining = max(1, limit - len(games))
-    products = [dict(r) for r in conn.execute("""
-        SELECT 'product' AS kind, provider, game_key, name AS label
-        FROM products
-        WHERE active=1 AND name LIKE ? COLLATE NOCASE
-        GROUP BY provider, game_key, name
-        ORDER BY name LIMIT ?
-    """, (qlike, remaining)).fetchall()]
-    conn.close()
-    return games + products
+    with db_conn() as conn:
+        qlike = f"%{q}%"
+        games = [dict(r) for r in conn.execute("""
+            SELECT 'game' AS kind, provider, game_key, name AS label, image_url
+            FROM games
+            WHERE active=1 AND name LIKE ? COLLATE NOCASE
+            ORDER BY name LIMIT ?
+        """, (qlike, limit)).fetchall()]
+        remaining = max(1, limit - len(games))
+        products = [dict(r) for r in conn.execute("""
+            SELECT 'product' AS kind, provider, game_key, name AS label
+            FROM products
+            WHERE active=1 AND name LIKE ? COLLATE NOCASE
+            GROUP BY provider, game_key, name
+            ORDER BY name LIMIT ?
+        """, (qlike, remaining)).fetchall()]
+        return games + products
 
 
 def get_user_by_google_sub(sub):
-    conn = connect()
-    row = conn.execute("SELECT * FROM users WHERE google_sub=?", (sub,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE google_sub=?", (sub,)).fetchone()
+        return dict(row) if row else None
 
 
 def link_user_google_sub(user_id, sub):
-    conn = connect()
-    conn.execute("UPDATE users SET google_sub=? WHERE id=?", (sub, user_id))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute("UPDATE users SET google_sub=? WHERE id=?", (sub, user_id))
+        conn.commit()
 
 
 def create_user_oauth(name, email, google_sub):
     """Create a user from OAuth (no password, email already verified)."""
     import secrets as _secrets, time as _t
-    conn = connect()
-    try:
-        random_pw = generate_password_hash(_secrets.token_urlsafe(32))
-        cur = conn.execute(
-            "INSERT INTO users(name, email, phone, password_hash, role, email_verified, google_sub, created_at) "
-            "VALUES (?, ?, '', ?, 'user', 1, ?, ?)",
-            (name or email.split("@")[0], email, random_pw, google_sub, int(_t.time()))
-        )
-        conn.commit()
-        uid = cur.lastrowid
-        return uid
-    except Exception:
-        return None
-    finally:
-        conn.close()
+    with db_conn() as conn:
+        try:
+            random_pw = generate_password_hash(_secrets.token_urlsafe(32))
+            cur = conn.execute(
+                "INSERT INTO users(name, email, phone, password_hash, role, email_verified, google_sub, created_at) "
+                "VALUES (?, ?, '', ?, 'user', 1, ?, ?)",
+                (name or email.split("@")[0], email, random_pw, google_sub, int(_t.time()))
+            )
+            conn.commit()
+            uid = cur.lastrowid
+            return uid
+        except Exception:
+            return None
 
 
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = connect()
+    with db_conn() as conn:
+        _init_db_inner(conn)
+
+
+def _init_db_inner(conn):
     cur = conn.cursor()
 
     cur.execute("""
@@ -451,338 +469,299 @@ def init_db():
     cur.execute("INSERT OR IGNORE INTO settings (key,value) VALUES (?,?)", ("local_catalog_seeded", "0"))
 
     conn.commit()
-    conn.close()
 
 
 def seed_admin(email, password):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE email=?", (email,))
-    if not cur.fetchone():
-        cur.execute(
-            "INSERT INTO users (name,email,password_hash,role,balance,email_verified,created_at) VALUES (?,?,?,?,?,?,?)",
-            ("Admin", email, generate_password_hash(password), "admin", 0, 1, int(time.time()))
-        )
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE email=?", (email,))
+        if not cur.fetchone():
+            cur.execute(
+                "INSERT INTO users (name,email,password_hash,role,balance,email_verified,created_at) VALUES (?,?,?,?,?,?,?)",
+                ("Admin", email, generate_password_hash(password), "admin", 0, 1, int(time.time()))
+            )
+        conn.commit()
 
 
 def set_setting(key, value):
-    conn = connect()
-    conn.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)", (key, str(value)))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)", (key, str(value)))
+        conn.commit()
 
 
 def get_setting(key, default=None):
-    conn = connect()
-    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-    conn.close()
-    return row["value"] if row else default
+    with db_conn() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
 
 
 def create_user(name, email, phone, password, email_verified=0, email_token=None):
-    conn = connect()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """INSERT INTO users
-               (name,email,phone,password_hash,role,balance,email_verified,email_token,email_token_created_at,created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (
-                name,
-                email.lower(),
-                phone,
-                generate_password_hash(password),
-                "user",
-                0,
-                int(email_verified),
-                email_token,
-                int(time.time()) if email_token else None,
-                int(time.time())
+    with db_conn() as conn:
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO users
+                   (name,email,phone,password_hash,role,balance,email_verified,email_token,email_token_created_at,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    name,
+                    email.lower(),
+                    phone,
+                    generate_password_hash(password),
+                    "user",
+                    0,
+                    int(email_verified),
+                    email_token,
+                    int(time.time()) if email_token else None,
+                    int(time.time())
+                )
             )
-        )
-        conn.commit()
-        return True, None
-    except sqlite3.IntegrityError:
-        return False, "البريد مستخدم مسبقًا"
-    finally:
-        conn.close()
+            conn.commit()
+            return True, None
+        except sqlite3.IntegrityError:
+            return False, "البريد مستخدم مسبقًا"
 
 
 def authenticate(email, password):
-    conn = connect()
-    row = conn.execute("SELECT * FROM users WHERE email=? AND active=1", (email.lower(),)).fetchone()
-    conn.close()
-    if row and check_password_hash(row["password_hash"], password):
-        return dict(row)
-    return None
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE email=? AND active=1", (email.lower(),)).fetchone()
+        if row and check_password_hash(row["password_hash"], password):
+            return dict(row)
+        return None
 
 
 # --- V51 task B: admin 2FA helpers ---------------------------------------
 def set_user_totp_secret(user_id, secret):
     """Store a NEW (unverified) TOTP secret. Does not flip `totp_enabled`
     — that happens via `enable_user_totp` once the first code is confirmed."""
-    conn = connect()
-    conn.execute(
-        "UPDATE users SET totp_secret=?, totp_enabled=0, totp_backup_codes=NULL, totp_enabled_at=NULL WHERE id=?",
-        (secret, int(user_id)),
-    )
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute(
+            "UPDATE users SET totp_secret=?, totp_enabled=0, totp_backup_codes=NULL, totp_enabled_at=NULL WHERE id=?",
+            (secret, int(user_id)),
+        )
+        conn.commit()
 
 
 def enable_user_totp(user_id, backup_codes_json):
     """Flip `totp_enabled` on (called after the user confirms a valid code).
     `backup_codes_json` is produced by security_2fa.serialize_backup_codes."""
-    conn = connect()
-    conn.execute(
-        "UPDATE users SET totp_enabled=1, totp_backup_codes=?, totp_enabled_at=? WHERE id=?",
-        (backup_codes_json, int(time.time()), int(user_id)),
-    )
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute(
+            "UPDATE users SET totp_enabled=1, totp_backup_codes=?, totp_enabled_at=? WHERE id=?",
+            (backup_codes_json, int(time.time()), int(user_id)),
+        )
+        conn.commit()
 
 
 def disable_user_totp(user_id):
     """Wipe every 2FA column for the user (setup must restart from scratch)."""
-    conn = connect()
-    conn.execute(
-        "UPDATE users SET totp_secret=NULL, totp_enabled=0, totp_backup_codes=NULL, totp_enabled_at=NULL WHERE id=?",
-        (int(user_id),),
-    )
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute(
+            "UPDATE users SET totp_secret=NULL, totp_enabled=0, totp_backup_codes=NULL, totp_enabled_at=NULL WHERE id=?",
+            (int(user_id),),
+        )
+        conn.commit()
 
 
 def update_user_backup_codes(user_id, backup_codes_json):
     """Replace the stored backup-codes blob (used after consuming a code or
     after regenerating)."""
-    conn = connect()
-    conn.execute(
-        "UPDATE users SET totp_backup_codes=? WHERE id=?",
-        (backup_codes_json, int(user_id)),
-    )
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute(
+            "UPDATE users SET totp_backup_codes=? WHERE id=?",
+            (backup_codes_json, int(user_id)),
+        )
+        conn.commit()
 
 
 def get_user_by_email(email):
-    conn = connect()
-    row = conn.execute("SELECT * FROM users WHERE email=?", (email.lower(),)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE email=?", (email.lower(),)).fetchone()
+        return dict(row) if row else None
 
 
 def verify_user_email(token):
-    conn = connect()
-    row = conn.execute("SELECT * FROM users WHERE email_token=?", (token,)).fetchone()
-    if not row:
-        conn.close()
-        return False, "رابط التفعيل غير صحيح"
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE email_token=?", (token,)).fetchone()
+        if not row:
+            return False, "رابط التفعيل غير صحيح"
 
-    token_created = row["email_token_created_at"] or 0
-    # صلاحية الرابط 24 ساعة
-    if int(time.time()) - int(token_created) > 86400:
-        conn.close()
-        return False, "انتهت صلاحية رابط التفعيل. سجل مرة أخرى أو اطلب رابطًا جديدًا."
+        token_created = row["email_token_created_at"] or 0
+        # صلاحية الرابط 24 ساعة
+        if int(time.time()) - int(token_created) > 86400:
+            return False, "انتهت صلاحية رابط التفعيل. سجل مرة أخرى أو اطلب رابطًا جديدًا."
 
-    conn.execute(
-        "UPDATE users SET email_verified=1, email_token=NULL, email_token_created_at=NULL WHERE id=?",
-        (row["id"],)
-    )
-    conn.commit()
-    conn.close()
-    return True, None
+        conn.execute(
+            "UPDATE users SET email_verified=1, email_token=NULL, email_token_created_at=NULL WHERE id=?",
+            (row["id"],)
+        )
+        conn.commit()
+        return True, None
 
 
 def set_user_email_token(user_id, token):
-    conn = connect()
-    conn.execute(
-        "UPDATE users SET email_token=?, email_token_created_at=? WHERE id=?",
-        (token, int(time.time()), user_id)
-    )
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute(
+            "UPDATE users SET email_token=?, email_token_created_at=? WHERE id=?",
+            (token, int(time.time()), user_id)
+        )
+        conn.commit()
 
 
 def set_password_reset_token(user_id, token):
-    conn = connect()
-    conn.execute(
-        "UPDATE users SET reset_token=?, reset_token_created_at=? WHERE id=?",
-        (token, int(time.time()), user_id)
-    )
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute(
+            "UPDATE users SET reset_token=?, reset_token_created_at=? WHERE id=?",
+            (token, int(time.time()), user_id)
+        )
+        conn.commit()
 
 
 def get_user_by_reset_token(token):
-    conn = connect()
-    row = conn.execute("SELECT * FROM users WHERE reset_token=?", (token,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE reset_token=?", (token,)).fetchone()
+        return dict(row) if row else None
 
 
 def reset_user_password(token, new_password):
-    conn = connect()
-    row = conn.execute("SELECT * FROM users WHERE reset_token=?", (token,)).fetchone()
-    if not row:
-        conn.close()
-        return False, "رابط الاستعادة غير صحيح"
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE reset_token=?", (token,)).fetchone()
+        if not row:
+            return False, "رابط الاستعادة غير صحيح"
 
-    token_created = row["reset_token_created_at"] or 0
-    if int(time.time()) - int(token_created) > 3600:
-        conn.close()
-        return False, "انتهت صلاحية رابط الاستعادة. اطلب رابطًا جديدًا."
+        token_created = row["reset_token_created_at"] or 0
+        if int(time.time()) - int(token_created) > 3600:
+            return False, "انتهت صلاحية رابط الاستعادة. اطلب رابطًا جديدًا."
 
-    conn.execute(
-        "UPDATE users SET password_hash=?, reset_token=NULL, reset_token_created_at=NULL WHERE id=?",
-        (generate_password_hash(new_password), row["id"])
-    )
-    conn.commit()
-    conn.close()
-    return True, None
+        conn.execute(
+            "UPDATE users SET password_hash=?, reset_token=NULL, reset_token_created_at=NULL WHERE id=?",
+            (generate_password_hash(new_password), row["id"])
+        )
+        conn.commit()
+        return True, None
 
 
 def get_user(user_id):
-    conn = connect()
-    row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        return dict(row) if row else None
 
 
 def update_user_profile(user_id, name=None, phone=None):
-    conn = connect()
-    conn.execute(
-        "UPDATE users SET name=COALESCE(?,name), phone=COALESCE(?,phone) WHERE id=?",
-        (name, phone, int(user_id))
-    )
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute(
+            "UPDATE users SET name=COALESCE(?,name), phone=COALESCE(?,phone) WHERE id=?",
+            (name, phone, int(user_id))
+        )
+        conn.commit()
 
 
 def set_pending_email_change(user_id, new_email, token):
-    conn = connect()
-    conn.execute(
-        "UPDATE users SET pending_email=?, pending_email_token=?, pending_email_created_at=? WHERE id=?",
-        (new_email.lower().strip(), token, int(time.time()), int(user_id))
-    )
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute(
+            "UPDATE users SET pending_email=?, pending_email_token=?, pending_email_created_at=? WHERE id=?",
+            (new_email.lower().strip(), token, int(time.time()), int(user_id))
+        )
+        conn.commit()
 
 
 def confirm_pending_email_change(token):
-    conn = connect()
-    row = conn.execute("SELECT * FROM users WHERE pending_email_token=?", (token,)).fetchone()
-    if not row:
-        conn.close()
-        return False, "رابط تغيير البريد غير صحيح"
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE pending_email_token=?", (token,)).fetchone()
+        if not row:
+            return False, "رابط تغيير البريد غير صحيح"
 
-    created = row["pending_email_created_at"] or 0
-    if int(time.time()) - int(created) > 86400:
-        conn.close()
-        return False, "انتهت صلاحية رابط تغيير البريد"
+        created = row["pending_email_created_at"] or 0
+        if int(time.time()) - int(created) > 86400:
+            return False, "انتهت صلاحية رابط تغيير البريد"
 
-    new_email = row["pending_email"]
-    exists = conn.execute("SELECT id FROM users WHERE email=? AND id!=?", (new_email, row["id"])).fetchone()
-    if exists:
-        conn.close()
-        return False, "هذا البريد مستخدم في حساب آخر"
+        new_email = row["pending_email"]
+        exists = conn.execute("SELECT id FROM users WHERE email=? AND id!=?", (new_email, row["id"])).fetchone()
+        if exists:
+            return False, "هذا البريد مستخدم في حساب آخر"
 
-    conn.execute(
-        "UPDATE users SET email=?, email_verified=1, pending_email=NULL, pending_email_token=NULL, pending_email_created_at=NULL WHERE id=?",
-        (new_email, row["id"])
-    )
-    conn.commit()
-    conn.close()
-    return True, None
+        conn.execute(
+            "UPDATE users SET email=?, email_verified=1, pending_email=NULL, pending_email_token=NULL, pending_email_created_at=NULL WHERE id=?",
+            (new_email, row["id"])
+        )
+        conn.commit()
+        return True, None
 
 
 def set_user_balance(user_id, amount):
-    conn = connect()
-    conn.execute("UPDATE users SET balance = ? WHERE id=?", (float(amount or 0), int(user_id)))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute("UPDATE users SET balance = ? WHERE id=?", (float(amount or 0), int(user_id)))
+        conn.commit()
 
 
 def change_balance(user_id, amount):
-    conn = connect()
-    try:
+    with db_conn() as conn:
         conn.execute("UPDATE users SET balance = balance + ? WHERE id=?", (amount, user_id))
         conn.commit()
-    finally:
-        conn.close()
 
 
 def upsert_game(provider, game_key, name, emoji="🎮", active=1):
-    conn = connect()
-    conn.execute("""
-        INSERT INTO games (provider, game_key, name, emoji, active)
-        VALUES (?,?,?,?,?)
-        ON CONFLICT(provider,game_key) DO UPDATE SET
-            name=excluded.name,
-            emoji=excluded.emoji
-    """, (provider, game_key, name, emoji, active))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute("""
+            INSERT INTO games (provider, game_key, name, emoji, active)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(provider,game_key) DO UPDATE SET
+                name=excluded.name,
+                emoji=excluded.emoji
+        """, (provider, game_key, name, emoji, active))
+        conn.commit()
 
 
 def add_custom_game(provider, game_key, name, emoji="🎮", image_url="", active=1):
-    conn = connect()
-    conn.execute("""
-        INSERT INTO games (provider, game_key, name, emoji, image_url, active)
-        VALUES (?,?,?,?,?,?)
-        ON CONFLICT(provider,game_key) DO UPDATE SET
-            name=excluded.name,
-            emoji=excluded.emoji,
-            image_url=excluded.image_url,
-            active=excluded.active
-    """, (provider, game_key, name, emoji, image_url, active))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute("""
+            INSERT INTO games (provider, game_key, name, emoji, image_url, active)
+            VALUES (?,?,?,?,?,?)
+            ON CONFLICT(provider,game_key) DO UPDATE SET
+                name=excluded.name,
+                emoji=excluded.emoji,
+                image_url=excluded.image_url,
+                active=excluded.active
+        """, (provider, game_key, name, emoji, image_url, active))
+        conn.commit()
 
 
 def set_game_active(provider, game_key, active):
-    conn = connect()
-    conn.execute("UPDATE games SET active=? WHERE provider=? AND game_key=?", (1 if active else 0, provider, game_key))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute("UPDATE games SET active=? WHERE provider=? AND game_key=?", (1 if active else 0, provider, game_key))
+        conn.commit()
 
 
 def upsert_product(provider, game_key, provider_product_id, name, base_price, sell_price, active=1):
-    conn = connect()
-    conn.execute("""
-        INSERT INTO products (provider, game_key, provider_product_id, name, base_price, sell_price, active)
-        VALUES (?,?,?,?,?,?,?)
-        ON CONFLICT(provider, provider_product_id) DO UPDATE SET
-            name=excluded.name,
-            base_price=excluded.base_price,
-            sell_price=excluded.sell_price
-    """, (provider, game_key, str(provider_product_id), name, base_price, sell_price, active))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute("""
+            INSERT INTO products (provider, game_key, provider_product_id, name, base_price, sell_price, active)
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(provider, provider_product_id) DO UPDATE SET
+                name=excluded.name,
+                base_price=excluded.base_price,
+                sell_price=excluded.sell_price
+        """, (provider, game_key, str(provider_product_id), name, base_price, sell_price, active))
+        conn.commit()
 
 
 def delete_products_for_game(provider, game_key):
     """حذف باقات لعبة محددة قبل إعادة مزامنتها لتجنب بقاء مناطق/باقات قديمة."""
-    conn = connect()
-    conn.execute("DELETE FROM products WHERE provider=? AND game_key=?", (provider, game_key))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute("DELETE FROM products WHERE provider=? AND game_key=?", (provider, game_key))
+        conn.commit()
 
 
 def list_games(provider=None, only_active=True):
-    conn = connect()
-    q = "SELECT * FROM games WHERE 1=1"
-    args = []
-    if provider:
-        q += " AND provider=?"; args.append(provider)
-    if only_active:
-        q += " AND active=1"
-    q += " ORDER BY active DESC, name ASC, id ASC"
-    rows = [dict(r) for r in conn.execute(q, args).fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        q = "SELECT * FROM games WHERE 1=1"
+        args = []
+        if provider:
+            q += " AND provider=?"; args.append(provider)
+        if only_active:
+            q += " AND active=1"
+        q += " ORDER BY active DESC, name ASC, id ASC"
+        return [dict(r) for r in conn.execute(q, args).fetchall()]
 
 
 def translate_product_name(name):
@@ -815,248 +794,228 @@ def translate_product_name(name):
 
 
 def list_product_groups(provider, game_key, only_active=True):
-    conn = connect()
-    q = "SELECT * FROM product_groups WHERE provider=? AND game_key=?"
-    args = [provider, game_key]
-    if only_active:
-        q += " AND active=1"
-    q += " ORDER BY CASE WHEN COALESCE(sort_order,0)=0 THEN 999999 ELSE sort_order END ASC, name ASC"
-    rows = [dict(r) for r in conn.execute(q, args).fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        q = "SELECT * FROM product_groups WHERE provider=? AND game_key=?"
+        args = [provider, game_key]
+        if only_active:
+            q += " AND active=1"
+        q += " ORDER BY CASE WHEN COALESCE(sort_order,0)=0 THEN 999999 ELSE sort_order END ASC, name ASC"
+        return [dict(r) for r in conn.execute(q, args).fetchall()]
 
 
 def get_product_group(group_id):
-    conn = connect()
-    row = conn.execute("SELECT * FROM product_groups WHERE id=?", (int(group_id),)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM product_groups WHERE id=?", (int(group_id),)).fetchone()
+        return dict(row) if row else None
 
 
 def create_product_group(provider, game_key, name, image_url="", sort_order=1, active=1):
-    conn = connect()
-    now = int(time.time())
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT OR IGNORE INTO product_groups (provider, game_key, name, image_url, sort_order, active, created_at)
-        VALUES (?,?,?,?,?,?,?)
-    """, (provider, game_key, str(name or "").strip(), image_url or "", int(sort_order or 1), int(active), now))
-    conn.commit()
-    row = conn.execute("SELECT * FROM product_groups WHERE provider=? AND game_key=? AND name=?", (provider, game_key, str(name or "").strip())).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        now = int(time.time())
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT OR IGNORE INTO product_groups (provider, game_key, name, image_url, sort_order, active, created_at)
+            VALUES (?,?,?,?,?,?,?)
+        """, (provider, game_key, str(name or "").strip(), image_url or "", int(sort_order or 1), int(active), now))
+        conn.commit()
+        row = conn.execute("SELECT * FROM product_groups WHERE provider=? AND game_key=? AND name=?", (provider, game_key, str(name or "").strip())).fetchone()
+        return dict(row) if row else None
 
 
 def update_product_group(group_id, name, image_url="", sort_order=1, active=1):
-    conn = connect()
-    conn.execute("UPDATE product_groups SET name=?, image_url=?, sort_order=?, active=? WHERE id=?", (str(name or "").strip(), image_url or "", int(sort_order or 1), int(active), int(group_id)))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute("UPDATE product_groups SET name=?, image_url=?, sort_order=?, active=? WHERE id=?", (str(name or "").strip(), image_url or "", int(sort_order or 1), int(active), int(group_id)))
+        conn.commit()
 
 
 def delete_product_group(group_id):
-    conn = connect()
-    conn.execute("UPDATE products SET group_id=NULL WHERE group_id=?", (int(group_id),))
-    conn.execute("DELETE FROM product_groups WHERE id=?", (int(group_id),))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute("UPDATE products SET group_id=NULL WHERE group_id=?", (int(group_id),))
+        conn.execute("DELETE FROM product_groups WHERE id=?", (int(group_id),))
+        conn.commit()
 
 
 def update_manual_syp_prices(price_updates):
-    conn = connect()
-    for product_id, manual_price_syp in price_updates:
-        try:
-            value = float(manual_price_syp or 0)
-        except Exception:
-            value = 0.0
-        conn.execute("UPDATE products SET manual_price_syp=? WHERE id=?", (value, int(product_id)))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        for product_id, manual_price_syp in price_updates:
+            try:
+                value = float(manual_price_syp or 0)
+            except Exception:
+                value = 0.0
+            conn.execute("UPDATE products SET manual_price_syp=? WHERE id=?", (value, int(product_id)))
+        conn.commit()
 
 
 def update_products_admin(product_updates, usd_syp_rate=15000):
-    conn = connect()
-    try:
-        rate = float(usd_syp_rate or 15000)
-    except Exception:
-        rate = 15000.0
-
-    for item in product_updates:
-        product_id = int(item["product_id"])
-        sort_order = int(item.get("sort_order") or 0)
-        group_id = int(item["group_id"]) if item.get("group_id") else None
-        pricing_mode = item.get("pricing_mode") or "usd"
-        if pricing_mode not in ("usd", "auto_syp", "fixed_syp"):
-            pricing_mode = "usd"
-
+    with db_conn() as conn:
         try:
-            fixed_syp_price = float(item.get("fixed_syp_price") or 0)
+            rate = float(usd_syp_rate or 15000)
         except Exception:
-            fixed_syp_price = 0.0
+            rate = 15000.0
 
-        if pricing_mode == "fixed_syp" and fixed_syp_price > 0 and rate > 0:
-            sell_price = round(fixed_syp_price / rate, 4)
-            conn.execute(
-                "UPDATE products SET sort_order=?, group_id=?, pricing_mode=?, fixed_syp_price=?, sell_price=? WHERE id=?",
-                (sort_order, group_id, pricing_mode, fixed_syp_price, sell_price, product_id)
-            )
-        else:
-            conn.execute(
-                "UPDATE products SET sort_order=?, group_id=?, pricing_mode=?, fixed_syp_price=? WHERE id=?",
-                (sort_order, group_id, pricing_mode, 0, product_id)
-            )
-    conn.commit()
-    conn.close()
+        for item in product_updates:
+            product_id = int(item["product_id"])
+            sort_order = int(item.get("sort_order") or 0)
+            group_id = int(item["group_id"]) if item.get("group_id") else None
+            pricing_mode = item.get("pricing_mode") or "usd"
+            if pricing_mode not in ("usd", "auto_syp", "fixed_syp"):
+                pricing_mode = "usd"
+
+            try:
+                fixed_syp_price = float(item.get("fixed_syp_price") or 0)
+            except Exception:
+                fixed_syp_price = 0.0
+
+            if pricing_mode == "fixed_syp" and fixed_syp_price > 0 and rate > 0:
+                sell_price = round(fixed_syp_price / rate, 4)
+                conn.execute(
+                    "UPDATE products SET sort_order=?, group_id=?, pricing_mode=?, fixed_syp_price=?, sell_price=? WHERE id=?",
+                    (sort_order, group_id, pricing_mode, fixed_syp_price, sell_price, product_id)
+                )
+            else:
+                conn.execute(
+                    "UPDATE products SET sort_order=?, group_id=?, pricing_mode=?, fixed_syp_price=? WHERE id=?",
+                    (sort_order, group_id, pricing_mode, 0, product_id)
+                )
+        conn.commit()
 
 
 def update_game_pricing(provider, game_key, pricing_currency):
     value = pricing_currency if pricing_currency in ("GLOBAL", "USD", "SYP") else "GLOBAL"
-    conn = connect()
-    conn.execute("UPDATE games SET pricing_currency=? WHERE provider=? AND game_key=?", (value, provider, game_key))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute("UPDATE games SET pricing_currency=? WHERE provider=? AND game_key=?", (value, provider, game_key))
+        conn.commit()
 
 
 def list_products(provider, game_key, only_active=True, group_id=None):
-    conn = connect()
+    with db_conn() as conn:
+        positive_count = 0
+        if only_active:
+            positive_count = conn.execute(
+                "SELECT COUNT(*) FROM products WHERE provider=? AND game_key=? AND active=1 AND COALESCE(sort_order,0)>0",
+                (provider, game_key)
+            ).fetchone()[0]
 
-    positive_count = 0
-    if only_active:
-        positive_count = conn.execute(
-            "SELECT COUNT(*) FROM products WHERE provider=? AND game_key=? AND active=1 AND COALESCE(sort_order,0)>0",
-            (provider, game_key)
-        ).fetchone()[0]
+        q = "SELECT * FROM products WHERE provider=? AND game_key=?"
+        args = [provider, game_key]
+        if only_active:
+            q += " AND active=1"
+            if positive_count > 0:
+                q += " AND COALESCE(sort_order,0)>0"
+        if group_id is not None:
+            q += " AND group_id=?"
+            args.append(int(group_id))
+        q += " ORDER BY CASE WHEN COALESCE(sort_order,0)=0 THEN 999999 ELSE sort_order END ASC, sell_price ASC, id ASC"
+        rows = [dict(r) for r in conn.execute(q, args).fetchall()]
 
-    q = "SELECT * FROM products WHERE provider=? AND game_key=?"
-    args = [provider, game_key]
-    if only_active:
-        q += " AND active=1"
-        if positive_count > 0:
-            q += " AND COALESCE(sort_order,0)>0"
-    if group_id is not None:
-        q += " AND group_id=?"
-        args.append(int(group_id))
-    q += " ORDER BY CASE WHEN COALESCE(sort_order,0)=0 THEN 999999 ELSE sort_order END ASC, sell_price ASC, id ASC"
-    rows = [dict(r) for r in conn.execute(q, args).fetchall()]
+        if only_active and not rows and group_id is None:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT * FROM products WHERE provider=? AND game_key=? ORDER BY CASE WHEN COALESCE(sort_order,0)=0 THEN 999999 ELSE sort_order END ASC, sell_price ASC, id ASC",
+                (provider, game_key)
+            ).fetchall()]
 
-    if only_active and not rows and group_id is None:
-        rows = [dict(r) for r in conn.execute(
-            "SELECT * FROM products WHERE provider=? AND game_key=? ORDER BY CASE WHEN COALESCE(sort_order,0)=0 THEN 999999 ELSE sort_order END ASC, sell_price ASC, id ASC",
-            (provider, game_key)
-        ).fetchall()]
+        for row in rows:
+            row["display_name"] = translate_product_name(row.get("name"))
 
-    for row in rows:
-        row["display_name"] = translate_product_name(row.get("name"))
-
-    conn.close()
-    return rows
+        return rows
 
 
 def list_public_product_groups_for_home():
-    conn = connect()
-    rows = [dict(r) for r in conn.execute("""
-        SELECT pg.*,
-               g.name AS game_name,
-               g.emoji AS game_emoji,
-               g.image_url AS game_image_url,
-               COUNT(p.id) AS product_count,
-               MIN(p.sell_price) AS min_price
-        FROM product_groups pg
-        JOIN games g ON g.provider=pg.provider AND g.game_key=pg.game_key
-        LEFT JOIN products p ON p.provider=pg.provider AND p.game_key=pg.game_key AND p.group_id=pg.id AND p.active=1
-        WHERE pg.active=1 AND g.active=1
-        GROUP BY pg.id
-        ORDER BY CASE WHEN COALESCE(pg.sort_order,0)=0 THEN 999999 ELSE pg.sort_order END ASC, g.name ASC, pg.name ASC
-    """).fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        return [dict(r) for r in conn.execute("""
+            SELECT pg.*,
+                   g.name AS game_name,
+                   g.emoji AS game_emoji,
+                   g.image_url AS game_image_url,
+                   COUNT(p.id) AS product_count,
+                   MIN(p.sell_price) AS min_price
+            FROM product_groups pg
+            JOIN games g ON g.provider=pg.provider AND g.game_key=pg.game_key
+            LEFT JOIN products p ON p.provider=pg.provider AND p.game_key=pg.game_key AND p.group_id=pg.id AND p.active=1
+            WHERE pg.active=1 AND g.active=1
+            GROUP BY pg.id
+            ORDER BY CASE WHEN COALESCE(pg.sort_order,0)=0 THEN 999999 ELSE pg.sort_order END ASC, g.name ASC, pg.name ASC
+        """).fetchall()]
 
 
 def list_public_games(only_active=True):
-    conn = connect()
-    q = """
-        SELECT g.*,
-               COUNT(p.id) AS product_count,
-               MIN(p.sell_price) AS min_price
-        FROM games g
-        LEFT JOIN products p ON p.provider=g.provider AND p.game_key=g.game_key AND p.active=1
-        WHERE 1=1
-    """
-    args = []
-    if only_active:
-        q += " AND g.active=1"
-    q += " GROUP BY g.id ORDER BY g.active DESC, g.name ASC"
-    rows = [dict(r) for r in conn.execute(q, args).fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        q = """
+            SELECT g.*,
+                   COUNT(p.id) AS product_count,
+                   MIN(p.sell_price) AS min_price
+            FROM games g
+            LEFT JOIN products p ON p.provider=g.provider AND p.game_key=g.game_key AND p.active=1
+            WHERE 1=1
+        """
+        args = []
+        if only_active:
+            q += " AND g.active=1"
+        q += " GROUP BY g.id ORDER BY g.active DESC, g.name ASC"
+        return [dict(r) for r in conn.execute(q, args).fetchall()]
 
 
 def list_all_game_groups():
-    conn = connect()
-    rows = [dict(r) for r in conn.execute("""
-        SELECT g.*,
-               COUNT(p.id) AS product_count,
-               MIN(p.sell_price) AS min_price
-        FROM games g
-        LEFT JOIN products p ON p.provider=g.provider AND p.game_key=g.game_key
-        GROUP BY g.id
-        ORDER BY g.provider, g.name
-    """).fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        return [dict(r) for r in conn.execute("""
+            SELECT g.*,
+                   COUNT(p.id) AS product_count,
+                   MIN(p.sell_price) AS min_price
+            FROM games g
+            LEFT JOIN products p ON p.provider=g.provider AND p.game_key=g.game_key
+            GROUP BY g.id
+            ORDER BY g.provider, g.name
+        """).fetchall()]
 
 
 def list_product_games_from_products():
     """اكتشاف ألعاب موجودة في جدول المنتجات حتى لو لم تظهر في جدول games."""
-    conn = connect()
-    rows = [dict(r) for r in conn.execute("""
-        SELECT provider, game_key, COUNT(*) AS product_count, MIN(sell_price) AS min_price
-        FROM products
-        GROUP BY provider, game_key
-        ORDER BY provider, game_key
-    """).fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        return [dict(r) for r in conn.execute("""
+            SELECT provider, game_key, COUNT(*) AS product_count, MIN(sell_price) AS min_price
+            FROM products
+            GROUP BY provider, game_key
+            ORDER BY provider, game_key
+        """).fetchall()]
 
 
 def accounting_summary():
-    conn = connect()
-    total_sales = conn.execute("SELECT COALESCE(SUM(price),0) s FROM orders WHERE status='completed'").fetchone()["s"]
-    total_cost = conn.execute("""
-        SELECT COALESCE(SUM(p.base_price),0) s
-        FROM orders o
-        LEFT JOIN products p ON p.id=o.product_id
-        WHERE o.status='completed'
-    """).fetchone()["s"]
-    total_profit = float(total_sales or 0) - float(total_cost or 0)
-    orders_count = conn.execute("SELECT COUNT(*) c FROM orders WHERE status='completed'").fetchone()["c"]
+    with db_conn() as conn:
+        total_sales = conn.execute("SELECT COALESCE(SUM(price),0) s FROM orders WHERE status='completed'").fetchone()["s"]
+        total_cost = conn.execute("""
+            SELECT COALESCE(SUM(p.base_price),0) s
+            FROM orders o
+            LEFT JOIN products p ON p.id=o.product_id
+            WHERE o.status='completed'
+        """).fetchone()["s"]
+        total_profit = float(total_sales or 0) - float(total_cost or 0)
+        orders_count = conn.execute("SELECT COUNT(*) c FROM orders WHERE status='completed'").fetchone()["c"]
 
-    by_game = [dict(r) for r in conn.execute("""
-        SELECT o.game_name,
-               COUNT(*) AS orders_count,
-               COALESCE(SUM(o.price),0) AS sales,
-               COALESCE(SUM(p.base_price),0) AS cost,
-               COALESCE(SUM(o.price - COALESCE(p.base_price,0)),0) AS profit
-        FROM orders o
-        LEFT JOIN products p ON p.id=o.product_id
-        WHERE o.status='completed'
-        GROUP BY o.game_name
-        ORDER BY profit DESC
-    """).fetchall()]
+        by_game = [dict(r) for r in conn.execute("""
+            SELECT o.game_name,
+                   COUNT(*) AS orders_count,
+                   COALESCE(SUM(o.price),0) AS sales,
+                   COALESCE(SUM(p.base_price),0) AS cost,
+                   COALESCE(SUM(o.price - COALESCE(p.base_price,0)),0) AS profit
+            FROM orders o
+            LEFT JOIN products p ON p.id=o.product_id
+            WHERE o.status='completed'
+            GROUP BY o.game_name
+            ORDER BY profit DESC
+        """).fetchall()]
 
-    recent = [dict(r) for r in conn.execute("""
-        SELECT o.id, o.order_code, o.game_name, o.product_name, o.price,
-               COALESCE(p.base_price,0) AS cost,
-               (o.price - COALESCE(p.base_price,0)) AS profit,
-               o.created_at, u.email AS user_email
-        FROM orders o
-        LEFT JOIN products p ON p.id=o.product_id
-        LEFT JOIN users u ON u.id=o.user_id
-        WHERE o.status='completed'
-        ORDER BY o.id DESC
-        LIMIT 100
-    """).fetchall()]
-    conn.close()
+        recent = [dict(r) for r in conn.execute("""
+            SELECT o.id, o.order_code, o.game_name, o.product_name, o.price,
+                   COALESCE(p.base_price,0) AS cost,
+                   (o.price - COALESCE(p.base_price,0)) AS profit,
+                   o.created_at, u.email AS user_email
+            FROM orders o
+            LEFT JOIN products p ON p.id=o.product_id
+            LEFT JOIN users u ON u.id=o.user_id
+            WHERE o.status='completed'
+            ORDER BY o.id DESC
+            LIMIT 100
+        """).fetchall()]
     sales_override_raw = get_setting("sales_override", "")
     try:
         sales_override = float(sales_override_raw) if str(sales_override_raw).strip() != "" else None
@@ -1079,26 +1038,23 @@ def accounting_summary():
 
 
 def get_product(product_id):
-    conn = connect()
-    row = conn.execute("SELECT * FROM products WHERE id=? AND active=1", (product_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM products WHERE id=? AND active=1", (product_id,)).fetchone()
+        return dict(row) if row else None
 
 
 def get_product_by_id(product_id):
     """V48: fetch a product by internal DB id even if inactive.
     Used by RQ worker when re-resolving an order's product to send to supplier."""
-    conn = connect()
-    row = conn.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
+        return dict(row) if row else None
 
 
 def get_game(provider, game_key):
-    conn = connect()
-    row = conn.execute("SELECT * FROM games WHERE provider=? AND game_key=?", (provider, game_key)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM games WHERE provider=? AND game_key=?", (provider, game_key)).fetchone()
+        return dict(row) if row else None
 
 
 def _rate():
@@ -1163,181 +1119,157 @@ def create_order(user, product, game, player_id):
     order_code = f"ORD{secrets.token_urlsafe(10)}"
     final_price = _product_price_usd(product)
     product_label = translate_product_name(product.get("display_name") or product.get("name") or "")
-    conn = connect()
-    try:
-        # BEGIN IMMEDIATE acquires a write lock immediately, preventing
-        # concurrent writers from sneaking in between our read and write.
-        conn.execute("BEGIN IMMEDIATE")
-        cur = conn.cursor()
-        # Atomic deduction: only succeeds when balance is sufficient.
-        cur.execute(
-            "UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?",
-            (final_price, user["id"], final_price),
-        )
-        if cur.rowcount == 0:
+    with db_conn() as conn:
+        try:
+            # BEGIN IMMEDIATE acquires a write lock immediately, preventing
+            # concurrent writers from sneaking in between our read and write.
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.cursor()
+            # Atomic deduction: only succeeds when balance is sufficient.
+            cur.execute(
+                "UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?",
+                (final_price, user["id"], final_price),
+            )
+            if cur.rowcount == 0:
+                conn.rollback()
+                raise InsufficientBalance("رصيدك غير كافٍ")
+            cur.execute("""
+                INSERT INTO orders (order_code,user_id,provider,game_key,game_name,product_id,product_name,player_id,price,status,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (order_code, user["id"], product["provider"], product["game_key"], game["name"], product["id"], product_label, player_id, final_price, "waiting", now, now))
+            conn.commit()
+            order_id = cur.lastrowid
+        except InsufficientBalance:
+            raise
+        except Exception:
             conn.rollback()
-            conn.close()
-            raise InsufficientBalance("رصيدك غير كافٍ")
-        cur.execute("""
-            INSERT INTO orders (order_code,user_id,provider,game_key,game_name,product_id,product_name,player_id,price,status,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (order_code, user["id"], product["provider"], product["game_key"], game["name"], product["id"], product_label, player_id, final_price, "waiting", now, now))
-        conn.commit()
-        order_id = cur.lastrowid
-    except InsufficientBalance:
-        raise
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+            raise
     return order_id, order_code
 
 
 def update_order(order_id, status, provider_order_id=None, note=None):
-    conn = connect()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        cur = conn.cursor()
-        old_order = cur.execute("SELECT status, user_id, price FROM orders WHERE id=?", (order_id,)).fetchone()
-        if not old_order:
+    with db_conn() as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.cursor()
+            old_order = cur.execute("SELECT status, user_id, price FROM orders WHERE id=?", (order_id,)).fetchone()
+            if not old_order:
+                conn.rollback()
+                return False
+
+            cur.execute("UPDATE orders SET status=?, provider_order_id=?, note=?, updated_at=? WHERE id=?",
+                        (status, provider_order_id, note, int(time.time()), order_id))
+
+            # إرجاع الرصيد فقط إذا كانت الحالة السابقة ليست مرفوضة والحالة الجديدة مرفوضة
+            if status == "rejected" and old_order["status"] != "rejected":
+                cur.execute("UPDATE users SET balance = balance + ? WHERE id=?",
+                            (old_order["price"], old_order["user_id"]))
+            conn.commit()
+            return True
+        except Exception:
             conn.rollback()
-            return False
-
-        cur.execute("UPDATE orders SET status=?, provider_order_id=?, note=?, updated_at=? WHERE id=?",
-                    (status, provider_order_id, note, int(time.time()), order_id))
-
-        # إرجاع الرصيد فقط إذا كانت الحالة السابقة ليست مرفوضة والحالة الجديدة مرفوضة
-        if status == "rejected" and old_order["status"] != "rejected":
-            cur.execute("UPDATE users SET balance = balance + ? WHERE id=?",
-                        (old_order["price"], old_order["user_id"]))
-        conn.commit()
-        return True
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+            raise
 
 
 
 def list_user_orders(user_id):
-    conn = connect()
-    rows = [dict(r) for r in conn.execute("SELECT * FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 50", (user_id,)).fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 50", (user_id,)).fetchall()]
 
 
 def list_orders(status=None):
-    conn = connect()
-    if status:
-        rows = [dict(r) for r in conn.execute("SELECT * FROM orders WHERE status=? ORDER BY id DESC", (status,)).fetchall()]
-    else:
-        rows = [dict(r) for r in conn.execute("SELECT * FROM orders ORDER BY id DESC LIMIT 200").fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        if status:
+            return [dict(r) for r in conn.execute("SELECT * FROM orders WHERE status=? ORDER BY id DESC", (status,)).fetchall()]
+        else:
+            return [dict(r) for r in conn.execute("SELECT * FROM orders ORDER BY id DESC LIMIT 200").fetchall()]
 
 
 def get_order(order_id):
-    conn = connect()
-    row = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        return dict(row) if row else None
 
 
 def stats():
-    conn = connect()
-    data = {
-        "users": conn.execute("SELECT COUNT(*) c FROM users").fetchone()["c"],
-        "orders": conn.execute("SELECT COUNT(*) c FROM orders").fetchone()["c"],
-        "processing": conn.execute("SELECT COUNT(*) c FROM orders WHERE status='processing'").fetchone()["c"],
-        "completed": conn.execute("SELECT COUNT(*) c FROM orders WHERE status='completed'").fetchone()["c"],
-        "pending": conn.execute("SELECT COUNT(*) c FROM orders WHERE status='pending'").fetchone()["c"],
-        "revenue": conn.execute("SELECT COALESCE(SUM(price),0) s FROM orders WHERE status='completed'").fetchone()["s"],
-    }
-    conn.close()
-    return data
+    with db_conn() as conn:
+        return {
+            "users": conn.execute("SELECT COUNT(*) c FROM users").fetchone()["c"],
+            "orders": conn.execute("SELECT COUNT(*) c FROM orders").fetchone()["c"],
+            "processing": conn.execute("SELECT COUNT(*) c FROM orders WHERE status='processing'").fetchone()["c"],
+            "completed": conn.execute("SELECT COUNT(*) c FROM orders WHERE status='completed'").fetchone()["c"],
+            "pending": conn.execute("SELECT COUNT(*) c FROM orders WHERE status='pending'").fetchone()["c"],
+            "revenue": conn.execute("SELECT COALESCE(SUM(price),0) s FROM orders WHERE status='completed'").fetchone()["s"],
+        }
 
 
 def list_users():
-    conn = connect()
-    rows = [dict(r) for r in conn.execute("SELECT id,name,email,phone,role,balance,active,email_verified,created_at FROM users ORDER BY id DESC").fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        return [dict(r) for r in conn.execute("SELECT id,name,email,phone,role,balance,active,email_verified,created_at FROM users ORDER BY id DESC").fetchall()]
 
 
 def search_users(q=None):
-    conn = connect()
-    if q:
-        like = f"%{q}%"
-        args = [like, like, like]
-        extra_ids = []
-        if str(q).isdigit():
-            extra_ids.append(int(q))
-        # B608 suppressed: only a STATIC fragment (" OR u.id=?") may be
-        # appended below; all user input is bound via parameters.
-        _sql = (
-            "SELECT DISTINCT u.id,u.name,u.email,u.phone,u.role,u.balance,"
-            "u.active,u.email_verified,u.created_at "
-            "FROM users u "
-            "LEFT JOIN orders o ON o.user_id=u.id "
-            "WHERE u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? "
-            "OR o.player_id LIKE ?"
-            + (" OR u.id=?" if extra_ids else "")
-            + " ORDER BY u.id DESC LIMIT 300"
-        )
-        rows = [dict(r) for r in conn.execute(_sql, args + [like] + extra_ids).fetchall()]  # nosec B608
-    else:
-        rows = [dict(r) for r in conn.execute("SELECT id,name,email,phone,role,balance,active,email_verified,created_at FROM users ORDER BY id DESC LIMIT 300").fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        if q:
+            like = f"%{q}%"
+            args = [like, like, like]
+            extra_ids = []
+            if str(q).isdigit():
+                extra_ids.append(int(q))
+            # B608 suppressed: only a STATIC fragment (" OR u.id=?") may be
+            # appended below; all user input is bound via parameters.
+            _sql = (
+                "SELECT DISTINCT u.id,u.name,u.email,u.phone,u.role,u.balance,"
+                "u.active,u.email_verified,u.created_at "
+                "FROM users u "
+                "LEFT JOIN orders o ON o.user_id=u.id "
+                "WHERE u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? "
+                "OR o.player_id LIKE ?"
+                + (" OR u.id=?" if extra_ids else "")
+                + " ORDER BY u.id DESC LIMIT 300"
+            )
+            return [dict(r) for r in conn.execute(_sql, args + [like] + extra_ids).fetchall()]  # nosec B608
+        else:
+            return [dict(r) for r in conn.execute("SELECT id,name,email,phone,role,balance,active,email_verified,created_at FROM users ORDER BY id DESC LIMIT 300").fetchall()]
 
 
 def get_user_by_id(user_id):
-    conn = connect()
-    row = conn.execute("SELECT id,name,email,phone,role,balance,active,email_verified,created_at FROM users WHERE id=?", (int(user_id),)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        row = conn.execute("SELECT id,name,email,phone,role,balance,active,email_verified,created_at FROM users WHERE id=?", (int(user_id),)).fetchone()
+        return dict(row) if row else None
 
 
 def user_financial_summary(user_id):
-    conn = connect()
-    data = {
-        "deposits_count": conn.execute("SELECT COUNT(*) c FROM deposits WHERE user_id=?", (user_id,)).fetchone()["c"],
-        "deposits_approved": conn.execute("SELECT COUNT(*) c FROM deposits WHERE user_id=? AND status='approved'", (user_id,)).fetchone()["c"],
-        "deposits_total_paid": conn.execute("SELECT COALESCE(SUM(amount),0) s FROM deposits WHERE user_id=? AND status='approved'", (user_id,)).fetchone()["s"],
-        "orders_count": conn.execute("SELECT COUNT(*) c FROM orders WHERE user_id=?", (user_id,)).fetchone()["c"],
-        "orders_total": conn.execute("SELECT COALESCE(SUM(price),0) s FROM orders WHERE user_id=?", (user_id,)).fetchone()["s"],
-    }
-    conn.close()
-    return data
+    with db_conn() as conn:
+        return {
+            "deposits_count": conn.execute("SELECT COUNT(*) c FROM deposits WHERE user_id=?", (user_id,)).fetchone()["c"],
+            "deposits_approved": conn.execute("SELECT COUNT(*) c FROM deposits WHERE user_id=? AND status='approved'", (user_id,)).fetchone()["c"],
+            "deposits_total_paid": conn.execute("SELECT COALESCE(SUM(amount),0) s FROM deposits WHERE user_id=? AND status='approved'", (user_id,)).fetchone()["s"],
+            "orders_count": conn.execute("SELECT COUNT(*) c FROM orders WHERE user_id=?", (user_id,)).fetchone()["c"],
+            "orders_total": conn.execute("SELECT COALESCE(SUM(price),0) s FROM orders WHERE user_id=?", (user_id,)).fetchone()["s"],
+        }
 
 
 def list_user_deposits_admin(user_id):
-    conn = connect()
-    rows = [dict(r) for r in conn.execute("SELECT * FROM deposits WHERE user_id=? ORDER BY id DESC LIMIT 300", (int(user_id),)).fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM deposits WHERE user_id=? ORDER BY id DESC LIMIT 300", (int(user_id),)).fetchall()]
 
 
 # --- Payment Methods & Deposits ---
 
 def list_payment_methods(only_active=False):
-    conn = connect()
-    q = "SELECT * FROM payment_methods"
-    if only_active:
-        q += " WHERE active=1"
-    q += " ORDER BY name"
-    rows = [dict(r) for r in conn.execute(q).fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        q = "SELECT * FROM payment_methods"
+        if only_active:
+            q += " WHERE active=1"
+        q += " ORDER BY name"
+        return [dict(r) for r in conn.execute(q).fetchall()]
 
 
 def get_payment_method(method_id):
-    conn = connect()
-    row = conn.execute("SELECT * FROM payment_methods WHERE id=?", (method_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM payment_methods WHERE id=?", (method_id,)).fetchone()
+        return dict(row) if row else None
 
 
 def update_payment_method(method_id, name=None, emoji=None, address=None, instructions=None, active=None, currency=None):
@@ -1350,13 +1282,12 @@ def update_payment_method(method_id, name=None, emoji=None, address=None, instru
     instructions = method["instructions"] if instructions is None else instructions
     active = method["active"] if active is None else (1 if active else 0)
     currency = method.get("currency", "USD") if currency is None else currency
-    conn = connect()
-    conn.execute("""
-        UPDATE payment_methods SET name=?, emoji=?, address=?, instructions=?, active=?, currency=?
-        WHERE id=?
-    """, (name, emoji, address, instructions, active, currency, method_id))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute("""
+            UPDATE payment_methods SET name=?, emoji=?, address=?, instructions=?, active=?, currency=?
+            WHERE id=?
+        """, (name, emoji, address, instructions, active, currency, method_id))
+        conn.commit()
     return True
 
 
@@ -1371,97 +1302,86 @@ def create_deposit(user_id, amount, method_id, proof, amount_usd=None):
     # V50 SECURITY (CA): same predictability issue as order_code. Use a
     # random token so deposit codes cannot be enumerated by attackers.
     code = f"DEP{secrets.token_urlsafe(10)}"
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO deposits (deposit_code,user_id,amount,method,proof,status,created_at,currency,amount_usd)
-        VALUES (?,?,?,?,?,?,?,?,?)
-    """, (code, user_id, amount, method["name"], proof, "pending", now, currency, amount_usd))
-    conn.commit()
-    deposit_id = cur.lastrowid
-    conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO deposits (deposit_code,user_id,amount,method,proof,status,created_at,currency,amount_usd)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """, (code, user_id, amount, method["name"], proof, "pending", now, currency, amount_usd))
+        conn.commit()
+        deposit_id = cur.lastrowid
     return deposit_id, code
 
 
 def list_deposits_for_user(user_id):
-    conn = connect()
-    rows = [dict(r) for r in conn.execute("""
-        SELECT *
-        FROM deposits
-        WHERE user_id=?
-        ORDER BY id DESC
-        LIMIT 200
-    """, (int(user_id),)).fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        return [dict(r) for r in conn.execute("""
+            SELECT *
+            FROM deposits
+            WHERE user_id=?
+            ORDER BY id DESC
+            LIMIT 200
+        """, (int(user_id),)).fetchall()]
 
 
 def list_deposits(status=None):
-    conn = connect()
-    if status:
-        rows = [dict(r) for r in conn.execute("""
-            SELECT d.*, u.name user_name, u.email user_email
-            FROM deposits d JOIN users u ON u.id=d.user_id
-            WHERE d.status=?
-            ORDER BY d.id DESC
-        """, (status,)).fetchall()]
-    else:
-        rows = [dict(r) for r in conn.execute("""
-            SELECT d.*, u.name user_name, u.email user_email
-            FROM deposits d JOIN users u ON u.id=d.user_id
-            ORDER BY d.id DESC LIMIT 200
-        """).fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        if status:
+            return [dict(r) for r in conn.execute("""
+                SELECT d.*, u.name user_name, u.email user_email
+                FROM deposits d JOIN users u ON u.id=d.user_id
+                WHERE d.status=?
+                ORDER BY d.id DESC
+            """, (status,)).fetchall()]
+        else:
+            return [dict(r) for r in conn.execute("""
+                SELECT d.*, u.name user_name, u.email user_email
+                FROM deposits d JOIN users u ON u.id=d.user_id
+                ORDER BY d.id DESC LIMIT 200
+            """).fetchall()]
 
 
 def get_deposit(deposit_id):
-    conn = connect()
-    row = conn.execute("SELECT * FROM deposits WHERE id=?", (deposit_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM deposits WHERE id=?", (deposit_id,)).fetchone()
+        return dict(row) if row else None
 
 
 def update_deposit(deposit_id, status):
-    conn = connect()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE deposits SET status=? WHERE id=? AND status=\'pending\'",
-            (status, deposit_id)
-        )
-        if cur.rowcount == 0:
+    with db_conn() as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE deposits SET status=? WHERE id=? AND status='pending'",
+                (status, deposit_id)
+            )
+            if cur.rowcount == 0:
+                conn.rollback()
+                return False  # تمت المعالجة مسبقاً
+            if status == "approved":
+                dep = cur.execute("SELECT * FROM deposits WHERE id=?", (deposit_id,)).fetchone()
+                amount_to_add = _amount_to_usd(dep["amount"], dep.get("currency", "USD"))
+                cur.execute("UPDATE users SET balance = balance + ? WHERE id=?",
+                             (amount_to_add, dep["user_id"]))
+            conn.commit()
+            return True
+        except Exception:
             conn.rollback()
-            conn.close()
-            return False  # تمت المعالجة مسبقاً
-        if status == "approved":
-            dep = cur.execute("SELECT * FROM deposits WHERE id=?", (deposit_id,)).fetchone()
-            amount_to_add = _amount_to_usd(dep["amount"], dep.get("currency", "USD"))
-            cur.execute("UPDATE users SET balance = balance + ? WHERE id=?",
-                         (amount_to_add, dep["user_id"]))
-        conn.commit()
-        return True
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+            raise
 
 
 def list_orders_for_auto_refresh():
     """طلبات لديها رقم طلب مورد وتحتاج تحديث حالة."""
-    conn = connect()
-    rows = [dict(r) for r in conn.execute("""
-        SELECT * FROM orders
-        WHERE status IN ('supplier_pending','processing')
-          AND provider_order_id IS NOT NULL
-          AND provider_order_id != ''
-        ORDER BY id ASC
-        LIMIT 100
-    """).fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        return [dict(r) for r in conn.execute("""
+            SELECT * FROM orders
+            WHERE status IN ('supplier_pending','processing')
+              AND provider_order_id IS NOT NULL
+              AND provider_order_id != ''
+            ORDER BY id ASC
+            LIMIT 100
+        """).fetchall()]
 
 
 def get_order_public(order_id, user_id=None):
@@ -1470,54 +1390,47 @@ def get_order_public(order_id, user_id=None):
     # user_id. Require an explicit owner id (or admin sentinel) to look up.
     # Pass user_id="*" from admin code paths when cross-user access is
     # intentionally required.
-    conn = connect()
     if user_id is None:
-        conn.close()
         raise ValueError("get_order_public requires an explicit user_id; "
                          "use user_id='*' for admin access")
-    if user_id == "*":
-        row = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
-    else:
-        row = conn.execute("SELECT * FROM orders WHERE id=? AND user_id=?", (order_id, user_id)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    with db_conn() as conn:
+        if user_id == "*":
+            row = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        else:
+            row = conn.execute("SELECT * FROM orders WHERE id=? AND user_id=?", (order_id, user_id)).fetchone()
+        return dict(row) if row else None
 
 
 def update_game_image(provider, game_key, image_url):
-    conn = connect()
-    conn.execute("UPDATE games SET image_url=? WHERE provider=? AND game_key=?", (image_url, provider, game_key))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        conn.execute("UPDATE games SET image_url=? WHERE provider=? AND game_key=?", (image_url, provider, game_key))
+        conn.commit()
 
 
 def list_all_games_for_admin():
-    conn = connect()
-    rows = [dict(r) for r in conn.execute("SELECT * FROM games ORDER BY provider, name").fetchall()]
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM games ORDER BY provider, name").fetchall()]
 
 
 def list_all_products_for_admin(provider, game_key):
-    conn = connect()
-    rows = [dict(r) for r in conn.execute("""
-        SELECT p.*, g.name AS group_name
-        FROM products p
-        LEFT JOIN product_groups g ON p.group_id=g.id
-        WHERE p.provider=? AND p.game_key=?
-        ORDER BY COALESCE(p.group_id,0), p.sort_order ASC, p.sell_price ASC, p.id ASC
-    """, (provider, game_key)).fetchall()]
-    for row in rows:
-        row["display_name"] = translate_product_name(row.get("name"))
-    conn.close()
-    return rows
+    with db_conn() as conn:
+        rows = [dict(r) for r in conn.execute("""
+            SELECT p.*, g.name AS group_name
+            FROM products p
+            LEFT JOIN product_groups g ON p.group_id=g.id
+            WHERE p.provider=? AND p.game_key=?
+            ORDER BY COALESCE(p.group_id,0), p.sort_order ASC, p.sell_price ASC, p.id ASC
+        """, (provider, game_key)).fetchall()]
+        for row in rows:
+            row["display_name"] = translate_product_name(row.get("name"))
+        return rows
 
 
 def update_product_sort_orders(order_pairs):
-    conn = connect()
-    for product_id, sort_order in order_pairs:
-        conn.execute("UPDATE products SET sort_order=? WHERE id=?", (int(sort_order), int(product_id)))
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        for product_id, sort_order in order_pairs:
+            conn.execute("UPDATE products SET sort_order=? WHERE id=?", (int(sort_order), int(product_id)))
+        conn.commit()
 
 
 def update_profit_margin(margin):
@@ -1532,26 +1445,25 @@ def update_profit_margin(margin):
     those overrides as part of the operation.
     """
     margin = float(margin)
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)",
-                ("profit_margin", str(margin)))
-    # Recompute sell_price for every product from its base cost.
-    cur.execute("UPDATE products SET sell_price = ROUND(COALESCE(base_price,0) * ?, 2)",
-                (margin,))
-    # Drop fixed-SYP overrides so the new margin is what the user sees.
-    try:
-        cur.execute("UPDATE products SET pricing_mode='usd', fixed_syp_price=0 "
-                    "WHERE pricing_mode='fixed_syp'")
-    except Exception:
-        pass
-    # Drop manual SYP price overrides; they would otherwise hide the margin.
-    try:
-        cur.execute("UPDATE products SET manual_price_syp=0 WHERE manual_price_syp>0")
-    except Exception:
-        pass
-    conn.commit()
-    conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)",
+                    ("profit_margin", str(margin)))
+        # Recompute sell_price for every product from its base cost.
+        cur.execute("UPDATE products SET sell_price = ROUND(COALESCE(base_price,0) * ?, 2)",
+                    (margin,))
+        # Drop fixed-SYP overrides so the new margin is what the user sees.
+        try:
+            cur.execute("UPDATE products SET pricing_mode='usd', fixed_syp_price=0 "
+                        "WHERE pricing_mode='fixed_syp'")
+        except Exception:
+            pass
+        # Drop manual SYP price overrides; they would otherwise hide the margin.
+        try:
+            cur.execute("UPDATE products SET manual_price_syp=0 WHERE manual_price_syp>0")
+        except Exception:
+            pass
+        conn.commit()
 
 
 
@@ -1575,100 +1487,98 @@ def seed_local_provider_catalog(force=False):
     الهدف: ظهور كل ألعاب/تصنيفات المورد في لوحة الإدارة بدون انتظار API.
     الألعاب تكون غير مفعلة افتراضيًا، ويمكن للأدمن تفعيل ما يريده.
     """
-    conn = connect()
-    current = conn.execute("SELECT value FROM settings WHERE key='local_catalog_seeded'").fetchone()
-    if current and current["value"] == "1" and not force:
-        conn.close()
-        return
+    with db_conn() as conn:
+        current = conn.execute("SELECT value FROM settings WHERE key='local_catalog_seeded'").fetchone()
+        if current and current["value"] == "1" and not force:
+            return
 
-    margin_row = conn.execute("SELECT value FROM settings WHERE key='profit_margin'").fetchone()
-    try:
-        margin = float(margin_row["value"] if margin_row else 1.20)
-    except Exception:
-        margin = 1.20
+        margin_row = conn.execute("SELECT value FROM settings WHERE key='profit_margin'").fetchone()
+        try:
+            margin = float(margin_row["value"] if margin_row else 1.20)
+        except Exception:
+            margin = 1.20
 
-    path = os.path.join(os.path.dirname(__file__), "g2bulk_services.json")
-    if not os.path.exists(path):
-        conn.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)", ("local_catalog_seeded", "1"))
-        conn.commit(); conn.close(); return
+        path = os.path.join(os.path.dirname(__file__), "g2bulk_services.json")
+        if not os.path.exists(path):
+            conn.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)", ("local_catalog_seeded", "1"))
+            conn.commit()
+            return
 
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            services = json.load(f)
-    except Exception:
-        conn.close(); return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                services = json.load(f)
+        except Exception:
+            return
 
-    featured_categories = {
-        "freefire middle east": ("freefire", "Free Fire", "🔥", 1),
-        "free fire middle east": ("freefire", "Free Fire", "🔥", 1),
-        "pubg mobile": ("pubg_mobile", "PUBG Mobile", "🔫", 1),
-        "pubg": ("pubg_mobile", "PUBG Mobile", "🔫", 1),
-        "fc mobile": ("fc_mobile", "FC Mobile", "⚽", 1),
-        "ea fc mobile": ("fc_mobile", "FC Mobile", "⚽", 1),
-    }
+        featured_categories = {
+            "freefire middle east": ("freefire", "Free Fire", "🔥", 1),
+            "free fire middle east": ("freefire", "Free Fire", "🔥", 1),
+            "pubg mobile": ("pubg_mobile", "PUBG Mobile", "🔫", 1),
+            "pubg": ("pubg_mobile", "PUBG Mobile", "🔫", 1),
+            "fc mobile": ("fc_mobile", "FC Mobile", "⚽", 1),
+            "ea fc mobile": ("fc_mobile", "FC Mobile", "⚽", 1),
+        }
 
-    grouped = {}
-    for item in services:
-        category = str(item.get("category") or "Other").strip() or "Other"
-        grouped.setdefault(category, []).append(item)
+        grouped = {}
+        for item in services:
+            category = str(item.get("category") or "Other").strip() or "Other"
+            grouped.setdefault(category, []).append(item)
 
-    for category, items in grouped.items():
-        cat_low = category.lower().strip()
-        # اختر اسم ثابت للألعاب المشهورة، وإلا استخدم التصنيف نفسه كاسم لعبة جاهزة في الإدارة
-        if cat_low in featured_categories:
-            game_key, game_name, emoji, active = featured_categories[cat_low]
-        elif "freefire middle east" in cat_low or "free fire middle east" in cat_low:
-            game_key, game_name, emoji, active = "freefire", "Free Fire", "🔥", 1
-        elif "pubg" in cat_low:
-            game_key, game_name, emoji, active = "pubg_mobile", "PUBG Mobile", "🔫", 1
-        elif "fc mobile" in cat_low or "ea fc" in cat_low:
-            game_key, game_name, emoji, active = "fc_mobile", "FC Mobile", "⚽", 1
-        else:
-            game_key = _slugify_game_key(category)
-            game_name = category
-            emoji = "🎮"
-            active = 0
+        for category, items in grouped.items():
+            cat_low = category.lower().strip()
+            if cat_low in featured_categories:
+                game_key, game_name, emoji, active = featured_categories[cat_low]
+            elif "freefire middle east" in cat_low or "free fire middle east" in cat_low:
+                game_key, game_name, emoji, active = "freefire", "Free Fire", "🔥", 1
+            elif "pubg" in cat_low:
+                game_key, game_name, emoji, active = "pubg_mobile", "PUBG Mobile", "🔫", 1
+            elif "fc mobile" in cat_low or "ea fc" in cat_low:
+                game_key, game_name, emoji, active = "fc_mobile", "FC Mobile", "⚽", 1
+            else:
+                game_key = _slugify_game_key(category)
+                game_name = category
+                emoji = "🎮"
+                active = 0
 
-        conn.execute("""
-            INSERT INTO games (provider, game_key, name, emoji, active)
-            VALUES (?,?,?,?,?)
-            ON CONFLICT(provider, game_key) DO UPDATE SET
-                name=excluded.name,
-                emoji=excluded.emoji
-        """, ("server1", game_key, game_name, emoji, active))
-
-        for svc in items:
-            service_id = svc.get("service")
-            if not service_id:
-                continue
-            name = str(svc.get("name") or category)
-            if game_key == "freefire":
-                name = name.replace("Freefire Middle East - ", "").replace("Free Fire Middle East - ", "")
-            base_price = _safe_float(svc.get("rate", 0))
-            sell_price = round(base_price * margin, 2)
             conn.execute("""
-                INSERT INTO products (provider, game_key, provider_product_id, name, base_price, sell_price, active)
-                VALUES (?,?,?,?,?,?,1)
-                ON CONFLICT(provider, provider_product_id) DO UPDATE SET
-                    game_key=excluded.game_key,
+                INSERT INTO games (provider, game_key, name, emoji, active)
+                VALUES (?,?,?,?,?)
+                ON CONFLICT(provider, game_key) DO UPDATE SET
                     name=excluded.name,
-                    base_price=excluded.base_price,
-                    sell_price=excluded.sell_price
-            """, ("server1", game_key, str(service_id), name, base_price, sell_price))
+                    emoji=excluded.emoji
+            """, ("server1", game_key, game_name, emoji, active))
 
-    # ألعاب المورد 2 التي عرفناها من Postman/API documentation. الباقات تُجلب عند تشغيل sync_products بعد ضبط المفتاح.
-    for provider, game_key, game_name, emoji, active in [
-        ("server2", "freefire", "Free Fire", "🔥", 0),
-        ("server2", "pubg_mobile", "PUBG Mobile", "🔫", 0),
-    ]:
-        conn.execute("""
-            INSERT INTO games (provider, game_key, name, emoji, active)
-            VALUES (?,?,?,?,?)
-            ON CONFLICT(provider,game_key) DO UPDATE SET name=excluded.name, emoji=excluded.emoji
-        """, (provider, game_key, game_name, emoji, active))
+            for svc in items:
+                service_id = svc.get("service")
+                if not service_id:
+                    continue
+                name = str(svc.get("name") or category)
+                if game_key == "freefire":
+                    name = name.replace("Freefire Middle East - ", "").replace("Free Fire Middle East - ", "")
+                base_price = _safe_float(svc.get("rate", 0))
+                sell_price = round(base_price * margin, 2)
+                conn.execute("""
+                    INSERT INTO products (provider, game_key, provider_product_id, name, base_price, sell_price, active)
+                    VALUES (?,?,?,?,?,?,1)
+                    ON CONFLICT(provider, provider_product_id) DO UPDATE SET
+                        game_key=excluded.game_key,
+                        name=excluded.name,
+                        base_price=excluded.base_price,
+                        sell_price=excluded.sell_price
+                """, ("server1", game_key, str(service_id), name, base_price, sell_price))
 
-    conn.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)", ("local_catalog_seeded", "1"))
-    conn.commit(); conn.close()
+        for provider, game_key, game_name, emoji, active in [
+            ("server2", "freefire", "Free Fire", "🔥", 0),
+            ("server2", "pubg_mobile", "PUBG Mobile", "🔫", 0),
+        ]:
+            conn.execute("""
+                INSERT INTO games (provider, game_key, name, emoji, active)
+                VALUES (?,?,?,?,?)
+                ON CONFLICT(provider,game_key) DO UPDATE SET name=excluded.name, emoji=excluded.emoji
+            """, (provider, game_key, game_name, emoji, active))
+
+        conn.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)", ("local_catalog_seeded", "1"))
+        conn.commit()
 
 
 # ===================== V44: attach generated game posters =====================
@@ -1682,17 +1592,17 @@ def attach_generated_posters():
     available = {f[:-5] for f in _os.listdir(poster_dir) if f.endswith(".webp")}
     if not available:
         return 0
-    conn = connect()
-    cur = conn.cursor()
-    rows = cur.execute("SELECT id, game_key, image_url FROM games").fetchall()
-    updated = 0
-    for r in rows:
-        gk = (r["game_key"] or "").lower()
-        if gk in available and not (r["image_url"] or "").strip():
-            url = f"/static/img/games/{gk}.webp"
-            cur.execute("UPDATE games SET image_url=? WHERE id=?", (url, r["id"]))
-            updated += 1
-    conn.commit(); conn.close()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        rows = cur.execute("SELECT id, game_key, image_url FROM games").fetchall()
+        updated = 0
+        for r in rows:
+            gk = (r["game_key"] or "").lower()
+            if gk in available and not (r["image_url"] or "").strip():
+                url = f"/static/img/games/{gk}.webp"
+                cur.execute("UPDATE games SET image_url=? WHERE id=?", (url, r["id"]))
+                updated += 1
+        conn.commit()
     return updated
 
 
@@ -1724,40 +1634,34 @@ def insert_audit_log(
     if not action:
         return None
     try:
-        conn = connect()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO audit_log (
-                ts, action, actor_id, actor_email,
-                target_type, target_id, ip, user_agent,
-                old_value, new_value, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                int(time.time()),
-                str(action)[:120],
-                int(actor_id) if actor_id is not None else None,
-                (actor_email or None) and str(actor_email)[:120],
-                (target_type or None) and str(target_type)[:60],
-                (target_id or None) and str(target_id)[:120],
-                (ip or None) and str(ip)[:64],
-                user_agent,
-                old_value,
-                new_value,
-                metadata,
-            ),
-        )
-        row_id = cur.lastrowid
-        conn.commit()
-        conn.close()
-        return row_id
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO audit_log (
+                    ts, action, actor_id, actor_email,
+                    target_type, target_id, ip, user_agent,
+                    old_value, new_value, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(time.time()),
+                    str(action)[:120],
+                    int(actor_id) if actor_id is not None else None,
+                    (actor_email or None) and str(actor_email)[:120],
+                    (target_type or None) and str(target_type)[:60],
+                    (target_id or None) and str(target_id)[:120],
+                    (ip or None) and str(ip)[:64],
+                    user_agent,
+                    old_value,
+                    new_value,
+                    metadata,
+                ),
+            )
+            row_id = cur.lastrowid
+            conn.commit()
+            return row_id
     except Exception:
-        # Best effort: never propagate DB errors to the caller.
-        try:
-            conn.close()  # type: ignore[name-defined]
-        except Exception:
-            pass
         return None
 
 
@@ -1797,10 +1701,9 @@ def list_audit_logs(limit=200, action=None, actor_id=None, target_type=None, tar
     params.append(limit)
 
     try:
-        conn = connect()
-        rows = [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
-        conn.close()
-        return rows
+        with db_conn() as conn:
+            rows = [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+            return rows
     except Exception:
         return []
 
@@ -1808,9 +1711,8 @@ def list_audit_logs(limit=200, action=None, actor_id=None, target_type=None, tar
 def count_audit_logs():
     """Return total number of audit rows (for pagination hints)."""
     try:
-        conn = connect()
-        row = conn.execute("SELECT COUNT(*) AS n FROM audit_log").fetchone()
-        conn.close()
-        return int(row["n"]) if row else 0
+        with db_conn() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM audit_log").fetchone()
+            return int(row["n"]) if row else 0
     except Exception:
         return 0
