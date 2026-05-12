@@ -176,6 +176,31 @@ try:
 except Exception as _exc:
     log.warning("Blueprint registration failed: %s", _exc)
 
+# V53 CRITICAL: Redis إلزامي في الإنتاج — رفض الإقلاع بدونه.
+# In-memory fallback يخلق ثلاث مشاكل في الإنتاج:
+#   1. Rate-limiter: كل worker حصة منفصلة → bypass عبر توزيع الحمل.
+#   2. RQ queue: فقدان الطلبات عند restart (خسارة مالية فعلية).
+#   3. Settings cache: عدم توافق بين workers لـ30 ثانية.
+_redis_url = os.getenv("REDIS_URL", "").strip()
+if os.getenv("FLASK_ENV") == "production" and not _redis_url:
+    raise RuntimeError(
+        "REDIS_URL is required in production. "
+        "Set it to a valid redis:// URL (Upstash/Railway/Redis Cloud) "
+        "or explicitly set FLASK_ENV=development for local testing."
+    )
+
+# V53: ping Redis at boot — fail hard in production, warn in dev.
+if _redis_url:
+    try:
+        import redis as _redis_lib
+        _r = _redis_lib.from_url(_redis_url, socket_connect_timeout=3)
+        _r.ping()
+        log.info("Redis reachable at %s", _redis_url.split("@")[-1])
+    except Exception as exc:
+        if os.getenv("FLASK_ENV") == "production":
+            raise RuntimeError(f"Cannot reach REDIS_URL: {exc}") from exc
+        log.warning("Redis unreachable (dev mode — continuing): %s", exc)
+
 # Rate limiting
 try:
     from flask_limiter import Limiter
@@ -184,7 +209,6 @@ try:
     # rate limits are shared across gunicorn workers and survive restarts.
     # Falls back to in-memory when Redis is unavailable (dev or single-process).
     _limiter_kwargs = {"app": app, "default_limits": []}
-    _redis_url = os.getenv("REDIS_URL", "").strip()
     if _redis_url:
         _limiter_kwargs["storage_uri"] = _redis_url
         _limiter_kwargs["strategy"] = "fixed-window"
@@ -774,30 +798,24 @@ def send_email_change_confirmation(to_email, token):
     send_email(to_email, "تأكيد تغيير البريد - TecnoGems", body)
 
 
-if os.getenv("REDIS_URL"):
-    from rq import Queue as _RQQueue
-    from redis import Redis
-    redis_conn = Redis.from_url(os.getenv("REDIS_URL"))
-    order_queue = _RQQueue("tecnogems_orders", connection=redis_conn)
-    _ORDER_QUEUE_KIND = "rq"
-    log.info("Using Redis Queue for orders.")
-else:
-    from queue import Queue as _LocalQueue
-    order_queue = _LocalQueue()
-    _ORDER_QUEUE_KIND = "local"
-    log.warning("⚠️  REDIS_URL is not set. Orders are queued in-memory and will be LOST if the process restarts. Set REDIS_URL and run worker_rq.py for durable processing.")
+# V53: RQ is the only order queue backend. In-memory fallback removed —
+# Redis is enforced at boot (see boot check above).
+from rq import Queue as _RQQueue
+from redis import Redis
+
+redis_conn = Redis.from_url(_redis_url) if _redis_url else None
+order_queue = _RQQueue("tecnogems_orders", connection=redis_conn) if redis_conn else None
+log.info("Using Redis Queue for order processing (worker_rq.py).")
 
 
 def enqueue_order_job(order_id, product=None, player_id=None):
-    """PATCH-C1/H4: unified enqueue. Both backends now process via
-    tasks.process_order(order_id) which re-fetches the order from DB.
-    The product and player_id parameters are ignored (kept for compatibility).
+    """Enqueue an order for async processing via RQ.
+
+    The product and player_id parameters are ignored (kept for API compat).
+    tasks.process_order re-fetches the order from DB by id.
     """
-    if _ORDER_QUEUE_KIND == "rq":
-        from tasks import process_order
-        order_queue.enqueue(process_order, order_id)
-    else:
-        order_queue.put({"order_id": order_id})
+    from tasks import process_order
+    order_queue.enqueue(process_order, order_id)
 
 
 
@@ -1060,23 +1078,6 @@ def admin_required(fn):
                     return redirect(url_for("admin_2fa_setup"))
         return fn(*args, **kwargs)
     return wrapper
-
-
-def worker():
-    """PATCH-H4: in-memory worker now delegates to tasks.process_order to keep
-    a SINGLE source of truth for the order processing flow. The local queue
-    only carries the order_id; product/player are re-resolved from the DB
-    inside process_order() — exactly like the RQ path."""
-    from tasks import process_order
-    while True:
-        job = order_queue.get()
-        try:
-            order_id = job["order_id"] if isinstance(job, dict) else int(job)
-            process_order(order_id)
-        except Exception as exc:
-            log.exception("Worker error on order %s: %s", job, exc)
-        finally:
-            order_queue.task_done()
 
 
 
@@ -2579,14 +2580,6 @@ def admin_game_products(provider, game_key):
     groups = list_product_groups(provider, game_key, False)
     return render_template("admin/game_products.html", game=game, products=products, groups=groups, usd_syp_rate=get_usd_syp_rate())
 
-
-# Start in-memory worker only if REDIS_URL is not set
-if not os.getenv("REDIS_URL"):
-    threading.Thread(target=worker, daemon=True).start()
-    log.info("Started in-memory worker thread.")
-else:
-    log.info("Using RQ worker (worker_rq.py) for order processing.")
-# V47: warn operators that in-memory queue loses jobs on process restart
 
 
 
