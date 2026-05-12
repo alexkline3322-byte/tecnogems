@@ -48,7 +48,7 @@
     </p>
   </form>
 </div>
-<script>
+<script nonce="{{ csp_nonce }}">
 function togglePw(inputId, showId, hideId) {
   var inp = document.getElementById(inputId);
   var isHidden = inp.type === 'password';

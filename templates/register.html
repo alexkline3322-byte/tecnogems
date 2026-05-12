@@ -2,7 +2,11 @@
 {% block content %}
 <div class="form card auth-card">
   <h2>{{ t("register") }}</h2>
-  <form method="post" class="auth-form" id="reg-form" novalidate>
+  <form method="post" class="auth-form" id="reg-form" novalidate
+        data-err-name="{{ 'Name is required' if is_en else 'الاسم مطلوب' }}"
+        data-err-email="{{ 'Enter a valid email' if is_en else 'أدخل بريداً إلكترونياً صحيحاً' }}"
+        data-err-password="{{ 'Minimum 6 characters' if is_en else '6 أحرف على الأقل' }}"
+        data-err-mismatch="{{ 'Passwords do not match' if is_en else 'كلمتا المرور غير متطابقتين' }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
     <label>{{ t("name") }}</label>
@@ -63,78 +67,5 @@
   </p>
 </div>
 
-<script>
-function togglePw(inputId, showId, hideId) {
-  var inp = document.getElementById(inputId);
-  var isHidden = inp.type === 'password';
-  inp.type = isHidden ? 'text' : 'password';
-  document.getElementById(showId).style.display = isHidden ? 'none' : '';
-  document.getElementById(hideId).style.display = isHidden ? '' : 'none';
-}
-
-// Password strength
-var pwInput = document.getElementById('reg-password');
-pwInput.addEventListener('input', function() {
-  var val = this.value;
-  var score = 0;
-  if (val.length >= 6) score++;
-  if (val.length >= 10) score++;
-  if (/[A-Z]/.test(val)) score++;
-  if (/[0-9]/.test(val)) score++;
-  if (/[^A-Za-z0-9]/.test(val)) score++;
-  var fill = document.getElementById('pw-strength-fill');
-  var label = document.getElementById('pw-strength-label');
-  var colors = ['#ef4444','#f97316','#eab308','#22c55e','#16a34a'];
-  var labels = ['ضعيفة جداً','ضعيفة','متوسطة','جيدة','قوية جداً'];
-  if (val.length === 0) { fill.style.width='0'; label.textContent=''; return; }
-  fill.style.width = ((score/5)*100)+'%';
-  fill.style.background = colors[score-1] || colors[0];
-  label.textContent = labels[score-1] || labels[0];
-  label.style.color = colors[score-1] || colors[0];
-});
-
-// Confirm match check
-document.getElementById('reg-confirm').addEventListener('input', function() {
-  var err = document.getElementById('err-confirm');
-  if (this.value && this.value !== pwInput.value) {
-    err.textContent = '{{ "Passwords do not match" if is_en else "كلمتا المرور غير متطابقتين" }}';
-  } else {
-    err.textContent = '';
-  }
-});
-
-// Form validation
-document.getElementById('reg-form').addEventListener('submit', function(e) {
-  var ok = true;
-  var clearErr = function(id) { document.getElementById(id).textContent = ''; };
-  ['err-name','err-reg-email','err-reg-password','err-confirm'].forEach(clearErr);
-
-  var name = document.getElementById('reg-name');
-  var email = document.getElementById('reg-email');
-  var pass = document.getElementById('reg-password');
-  var conf = document.getElementById('reg-confirm');
-
-  if (!name.value.trim()) {
-    document.getElementById('err-name').textContent = '{{ "Name is required" if is_en else "الاسم مطلوب" }}';
-    name.classList.add('input-err'); ok = false;
-  } else name.classList.remove('input-err');
-
-  if (!email.value.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.value)) {
-    document.getElementById('err-reg-email').textContent = '{{ "Enter a valid email" if is_en else "أدخل بريداً إلكترونياً صحيحاً" }}';
-    email.classList.add('input-err'); ok = false;
-  } else email.classList.remove('input-err');
-
-  if (pass.value.length < 6) {
-    document.getElementById('err-reg-password').textContent = '{{ "Minimum 6 characters" if is_en else "6 أحرف على الأقل" }}';
-    pass.classList.add('input-err'); ok = false;
-  } else pass.classList.remove('input-err');
-
-  if (conf.value !== pass.value) {
-    document.getElementById('err-confirm').textContent = '{{ "Passwords do not match" if is_en else "كلمتا المرور غير متطابقتين" }}';
-    conf.classList.add('input-err'); ok = false;
-  } else conf.classList.remove('input-err');
-
-  if (!ok) e.preventDefault();
-});
-</script>
+<script src="{{ url_for('static', filename='js/pages/register.js') }}" defer nonce="{{ csp_nonce }}"></script>
 {% endblock %}

@@ -39,7 +39,7 @@
     {{ "No games found." if is_en else "لا توجد نتائج." }}
   </div>
 
-  <script>
+  <script nonce="{{ csp_nonce }}">
   (function(){
     var input = document.getElementById('gameSearch');
     if (!input) return;
