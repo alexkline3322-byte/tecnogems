@@ -171,13 +171,11 @@ try:
 except Exception as _exc:
     log.warning("Flask-Babel not installed; templates fall back to legacy tr(). %s", _exc)
 
-# V45: register blueprints (phase 1: lang_bp). app.py keeps remaining
-# routes for now; future phases extract auth/admin/api/games/wallet.
-try:
-    from routes import register_blueprints
-    register_blueprints(app)
-except Exception as _exc:
-    log.warning("Blueprint registration failed: %s", _exc)
+# V53 REFACTOR (phase 1): Blueprint registration is deferred to the end of
+# this module. auth_bp.py imports helpers (safe_next_url, limiter, …) from
+# `app`, which can only work once those helpers have been defined below.
+# The actual call to `register_blueprints(app)` happens at the bottom of
+# this file — NOT here.
 
 # V53 CRITICAL: Redis إلزامي في الإنتاج — رفض الإقلاع بدونه.
 # In-memory fallback يخلق ثلاث مشاكل في الإنتاج:
@@ -1367,193 +1365,18 @@ def home():
         completed_orders_count=all_stats.get("completed", 0) if all_stats else 0)
 
 
-@app.route("/register", methods=["GET", "POST"])
-@(limiter.limit("8 per minute") if limiter else (lambda f: f))
-def register():
-    if request.method == "POST":
-        email = request.form.get("email", "").strip().lower()
-        password = request.form.get("password", "")
-        password_confirm = request.form.get("password_confirm", "")
-        # V50 SECURITY (HD): enforce upper length bounds before hashing the
-        # password. Without this a 10MB password would consume CPU in
-        # pbkdf2 and be a cheap DoS vector.
-        if (
-            len(password) > MAX_PASSWORD_LEN
-            or len(email) > MAX_EMAIL_LEN
-            or len(request.form.get("name", "")) > MAX_NAME_LEN
-            or len(request.form.get("phone", "")) > MAX_PHONE_LEN
-        ):
-            flash("أحد الحقول تجاوز الحد المسموح به", "danger")
-            return render_template("register.html", hide_phone_on_register=get_setting("hide_phone_on_register", "0"))
-        if password != password_confirm:
-            flash("كلمة المرور وتأكيدها غير متطابقين", "danger")
-            return render_template("register.html", hide_phone_on_register=get_setting("hide_phone_on_register", "0"))
-        pw_ok, pw_err = validate_password_strength(password)
-        if not pw_ok:
-            flash(pw_err, "danger")
-            return render_template("register.html", hide_phone_on_register=get_setting("hide_phone_on_register", "0"))
-        verification_enabled = email_verification_is_enabled()
-        token = secrets.token_urlsafe(32) if verification_enabled else None
-
-        ok, err = create_user(
-            request.form.get("name", "").strip(),
-            email,
-            request.form.get("phone", "").strip() if get_setting("hide_phone_on_register", "0") != "1" else "",
-            password,
-            email_verified=0 if verification_enabled else 1,
-            email_token=token
-        )
-        if ok:
-            if verification_enabled:
-                try:
-                    send_verification_email(email, token)
-                    flash("تم إنشاء الحساب. أرسلنا رابط التفعيل إلى بريدك الإلكتروني.", "success")
-                except Exception as exc:
-                    log.warning("verification email failed for %s: %s", email, exc)
-                    user = get_user_by_email(email)
-                    if user:
-                        set_user_email_token(user["id"], token)
-                    flash("تم إنشاء الحساب، لكن لم يتم إرسال بريد التفعيل. افحص إعدادات Gmail App Password في ملف .env، ثم استخدم إعادة إرسال رابط التفعيل.", "warning")
-                return redirect("/login")
-
-            flash("تم إنشاء الحساب. يمكنك تسجيل الدخول الآن.", "success")
-            return redirect("/login")
-        flash(err or "فشل إنشاء الحساب", "danger")
-    return render_template("register.html", hide_phone_on_register=get_setting("hide_phone_on_register", "0"))
-
-
-@app.route("/verify-email/<token>")
-@(limiter.limit("20 per hour") if limiter else (lambda f: f))  # V50.2 MEDIUM: was unlimited
-def verify_email(token):
-    ok, err = verify_user_email(token)
-    if ok:
-        flash("تم تفعيل البريد الإلكتروني بنجاح. يمكنك تسجيل الدخول الآن.", "success")
-    else:
-        flash(err or "تعذر تفعيل البريد الإلكتروني.", "danger")
-    return redirect("/login")
-
-
-@app.route("/resend-verification", methods=["GET", "POST"])
-@(limiter.limit("3 per minute;20 per hour") if limiter else (lambda f: f))  # V50.2 MEDIUM: was unlimited
-def resend_verification():
-    if request.method == "POST":
-        email = request.form.get("email", "").strip().lower()
-        user = get_user_by_email(email)
-        if user and not user.get("email_verified"):
-            token = secrets.token_urlsafe(32)
-            set_user_email_token(user["id"], token)
-            try:
-                send_verification_email(email, token)
-                flash("تم إرسال رابط تفعيل جديد إلى بريدك.", "success")
-            except Exception as exc:
-                flash(f"تعذر إرسال رابط التفعيل: {exc}", "danger")
-        else:
-            flash("إذا كان البريد مسجلًا وغير مفعل، سيتم إرسال رابط تفعيل.", "info")
-        return redirect("/login")
-    return render_template("resend_verification.html")
-
-
-@app.route("/forgot-password", methods=["GET", "POST"])
-@(limiter.limit("5 per minute") if limiter else (lambda f: f))
-def forgot_password():
-    if request.method == "POST":
-        email = request.form.get("email", "").strip().lower()
-        user = get_user_by_email(email)
-        if user:
-            token = secrets.token_urlsafe(32)
-            set_password_reset_token(user["id"], token)
-            try:
-                send_password_reset_email(email, token)
-            except Exception as exc:
-                flash(f"تعذر إرسال رابط الاستعادة: {exc}", "danger")
-                return redirect(url_for("forgot_password"))
-        flash("إذا كان البريد مسجلًا، أرسلنا رابط استعادة كلمة المرور.", "info")
-        return redirect("/login")
-    return render_template("forgot_password.html")
-
-
-@app.route("/reset-password/<token>", methods=["GET", "POST"])
-@(limiter.limit("10 per hour") if limiter else (lambda f: f))  # V50.2 MEDIUM: was unlimited
-def reset_password(token):
-    user = get_user_by_reset_token(token)
-    if not user:
-        flash("رابط الاستعادة غير صحيح أو انتهت صلاحيته.", "danger")
-        return redirect("/login")
-
-    if request.method == "POST":
-        password = request.form.get("password", "")
-        password_confirm = request.form.get("password_confirm", "")
-        if password != password_confirm:
-            flash("كلمة المرور وتأكيدها غير متطابقين", "danger")
-            return render_template("reset_password.html", token=token)
-        ok, err = reset_user_password(token, password)
-        if ok:
-            flash("تم تغيير كلمة المرور. يمكنك تسجيل الدخول الآن.", "success")
-            return redirect("/login")
-        flash(err or "تعذر تغيير كلمة المرور", "danger")
-    return render_template("reset_password.html", token=token)
-
-
-@app.route("/login", methods=["GET", "POST"])
-@(limiter.limit("10 per minute") if limiter else (lambda f: f))
-def login():
-    if request.method == "POST":
-        email = request.form.get("email", "").strip().lower()
-        password = request.form.get("password", "")
-        # V50 SECURITY (HD): reject oversized inputs before password hashing
-        # to prevent CPU-DoS via huge passwords.
-        if len(password) > MAX_PASSWORD_LEN or len(email) > MAX_EMAIL_LEN:
-            log.warning("Rejected oversized login inputs from %s", request.remote_addr)
-            flash("بيانات الدخول غير صحيحة", "danger")
-            return render_template("login.html", prefill_email="",
-                seo_title="تسجيل الدخول - TecnoGems شحن ألعاب",
-                seo_description="سجّل الدخول إلى حسابك في TecnoGems لمتابعة طلبات شحن الألعاب وإدارة محفظتك.")
-        user = authenticate(email, password)
-        if user:
-            if email_verification_is_enabled() and user["role"] != "admin" and not user.get("email_verified"):
-                flash("يجب تفعيل بريدك الإلكتروني قبل تسجيل الدخول. راجع بريدك.", "warning")
-                return redirect("/login")
-            # PATCH-H2: prevent session fixation by clearing any pre-existing
-            # session data before assigning the authenticated user id.
-            session.clear()
-            session["user_id"] = user["id"]
-            session["sess_v"] = int(user.get("session_version") or 1)
-            session.permanent = True
-            # V51 task B: for admins with 2FA enabled, mark the session
-            # as "password-only" (not yet 2FA-verified). admin_required
-            # will bounce them to /admin/2fa/challenge on first admin hit.
-            if user.get("role") == "admin" and int(user.get("totp_enabled") or 0) == 1:
-                session["admin_2fa_verified"] = False
-            flash("تم تسجيل الدخول بنجاح", "success")
-            return redirect(safe_next_url("home"))
-        # V50 SECURITY (M10): log failed auth attempts for monitoring / fail2ban.
-        log.warning("Failed login attempt for email=%s from ip=%s",
-                    email, request.remote_addr)
-        flash("بيانات الدخول غير صحيحة", "danger")
-        return render_template("login.html",
-            prefill_email=email,
-            seo_title="تسجيل الدخول - TecnoGems شحن ألعاب",
-            seo_description="سجّل الدخول إلى حسابك في TecnoGems لمتابعة طلبات شحن الألعاب وإدارة محفظتك."
-        )
-    return render_template("login.html",
-        seo_title="تسجيل الدخول - TecnoGems شحن ألعاب",
-        seo_description="سجّل الدخول إلى حسابك في TecnoGems لمتابعة طلبات شحن الألعاب وإدارة محفظتك."
-    )
-
-
-@app.route("/logout", methods=["GET", "POST"])
-def logout():
-    # V50.2 LOW: prefer POST (CSRF-protected form) for logout. GET is kept
-    # for backwards compatibility with existing <a href="/logout"> links
-    # and email deep-links, but new UI code should POST. When the request
-    # is a GET we still log it so we can track how many clients are using
-    # the deprecated path.
-    if request.method == "GET":
-        log.info("logout via GET from ip=%s user_id=%s — consider moving to POST form",
-                 request.remote_addr, session.get("user_id"))
-    session.clear()
-    flash("تم تسجيل الخروج", "info")
-    return redirect(url_for("home"))
+# ---------------------------------------------------------------------------
+# V53 REFACTOR (phase 1): auth routes have moved to routes/auth_bp.py.
+#
+# Moved here:
+#   /register, /verify-email/<token>, /resend-verification,
+#   /forgot-password, /reset-password/<token>, /login, /logout
+#   (/auth/google and /auth/google/callback also moved — see below.)
+#
+# The Blueprint is registered at the very bottom of this file so that every
+# helper function (limiter, safe_next_url, validate_password_strength, …)
+# it imports from `app` has already been defined at import time.
+# ---------------------------------------------------------------------------
 
 
 @app.route("/dashboard")
@@ -1685,7 +1508,7 @@ def confirm_email_change(token):
         flash("تم تغيير البريد الإلكتروني بنجاح", "success")
     else:
         flash(error or "تعذر تغيير البريد", "danger")
-    return redirect(url_for("profile") if current_user() else url_for("login"))
+    return redirect(url_for("profile") if current_user() else url_for("auth.login"))
 
 
 @app.route("/orders")
@@ -2842,52 +2665,10 @@ def _inject_oauth_flags():
     return {"google_oauth_enabled": bool(_oauth)}
 
 
-@app.route("/auth/google")
-def auth_google_login():
-    if not _oauth:
-        flash("تسجيل الدخول بـ Google غير مفعّل حالياً", "warning")
-        return redirect(url_for("login"))
-    return _oauth.google.authorize_redirect(GOOGLE_REDIRECT_URI)
-
-
-@app.route("/auth/google/callback")
-def auth_google_callback():
-    if not _oauth:
-        return redirect(url_for("login"))
-    try:
-        token = _oauth.google.authorize_access_token()
-        userinfo = token.get("userinfo") or _oauth.google.parse_id_token(token, None)
-    except Exception as exc:
-        app.logger.error("Google OAuth callback failed: %s", exc)
-        flash("تعذر إكمال تسجيل الدخول بـ Google", "danger")
-        return redirect(url_for("login"))
-
-    sub = (userinfo or {}).get("sub")
-    email = ((userinfo or {}).get("email") or "").strip().lower()
-    name = (userinfo or {}).get("name") or ""
-    if not sub or not email:
-        flash("لم يتم استلام بيانات كافية من Google", "danger")
-        return redirect(url_for("login"))
-
-    user = _db_get_user_by_google_sub(sub)
-    if not user:
-        existing = get_user_by_email(email)
-        if existing:
-            _db_link_user_google_sub(existing["id"], sub)
-            user = existing
-        else:
-            uid = _db_create_user_oauth(name, email, sub)
-            if not uid:
-                flash("فشل إنشاء حساب جديد من Google", "danger")
-                return redirect(url_for("login"))
-            user = get_user_by_id(uid)
-
-    # PATCH-H2: clear session before assigning user id (Google OAuth too)
-    session.clear()
-    session["user_id"] = user["id"]
-    session.permanent = True
-    flash("تم تسجيل الدخول عبر Google", "success")
-    return redirect(safe_next_url("home"))
+# V53 REFACTOR (phase 1): /auth/google + /auth/google/callback routes have
+# moved to routes/auth_bp.py. The oauth object (_oauth) + GOOGLE_REDIRECT_URI
+# remain defined here because they must be configured at app-startup time
+# (not inside a request); the Blueprint reaches them via `import app`.
 
 
 # PATCH-H1: exempt all /api/* JSON endpoints from CSRF.
@@ -2948,6 +2729,19 @@ def _api_origin_guard():
     except Exception as exc:
         log.warning("_api_origin_guard parse error: %s", exc)
     return None
+
+
+# ---------------------------------------------------------------------------
+# V53 REFACTOR (phase 1): register Blueprints AFTER every helper has been
+# defined. auth_bp.py does `from app import safe_next_url, limiter, ...` at
+# module top, so it must be imported only at this point — not earlier.
+# ---------------------------------------------------------------------------
+try:
+    from routes import register_blueprints
+    register_blueprints(app)
+except Exception as _exc:
+    log.warning("Blueprint registration failed: %s", _exc)
+    raise
 
 
 if __name__ == "__main__":

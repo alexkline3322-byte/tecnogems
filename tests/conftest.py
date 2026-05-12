@@ -66,7 +66,7 @@ def app(tmp_path, monkeypatch):
     # Ensure modules can be re-imported cleanly when another test already
     # imported them with a different DB_PATH.
     for mod in ("app", "database", "tasks", "providers", "security_2fa",
-                "sync_products", "featured_games", "routes", "routes.lang_bp"):
+                "sync_products", "featured_games", "routes", "routes.auth_bp"):
         sys.modules.pop(mod, None)
 
     import database  # noqa: E402 — imported after sys.modules reset

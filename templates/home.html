@@ -31,7 +31,7 @@
       {% if current_user %}
         <a href="{{ url_for('wallet') }}" class="tg-btn tg-glass">{{ t("topup_wallet") }}</a>
       {% else %}
-        <a href="{{ url_for('register') }}" class="tg-btn tg-glass">{{ t("register") }}</a>
+        <a href="{{ url_for('auth.register') }}" class="tg-btn tg-glass">{{ t("register") }}</a>
       {% endif %}
     </div>
   </div>
