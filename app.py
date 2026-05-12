@@ -57,6 +57,7 @@ def set_setting(key, value):
     return _db_set_setting(key, value)
 
 from providers import create_provider_order, get_provider_balance, validate_player_provider
+from sanitize import clean_plain_text, clean_rich_text
 
 load_dotenv()
 
@@ -2465,9 +2466,9 @@ def admin_games():
 def admin_add_game():
     provider = request.form.get("provider", "").strip()
     game_key = request.form.get("game_key", "").strip().lower().replace(" ", "_")
-    name = request.form.get("name", "").strip()
+    name = clean_plain_text(request.form.get("name", ""), max_len=100)
     emoji = request.form.get("emoji", "").strip() or "🎮"
-    image_url = request.form.get("image_url", "").strip()
+    image_url = clean_plain_text(request.form.get("image_url", ""), max_len=500)
 
     if provider not in ("server1", "server2") or not game_key or not name:
         flash("تأكد من إدخال المزود ومعرّف اللعبة واسمها", "danger")
@@ -2568,8 +2569,8 @@ def admin_game_products(provider, game_key):
         action = request.form.get("action", "save_products")
 
         if action == "create_group":
-            name = request.form.get("group_name", "").strip()
-            image_url = request.form.get("group_image_url", "").strip() or game.get("image_url", "")
+            name = clean_plain_text(request.form.get("group_name", ""), max_len=100)
+            image_url = clean_plain_text(request.form.get("group_image_url", ""), max_len=500) or game.get("image_url", "")
             sort_order = request.form.get("group_sort_order", "1")
             if name:
                 create_product_group(provider, game_key, name, image_url, sort_order, 1 if request.form.get("group_active") else 0)
@@ -2583,8 +2584,8 @@ def admin_game_products(provider, game_key):
             if group_id:
                 update_product_group(
                     group_id,
-                    request.form.get("group_name", "").strip(),
-                    request.form.get("group_image_url", "").strip() or game.get("image_url", ""),
+                    clean_plain_text(request.form.get("group_name", ""), max_len=100),
+                    clean_plain_text(request.form.get("group_image_url", ""), max_len=500) or game.get("image_url", ""),
                     request.form.get("group_sort_order", "1"),
                     1 if request.form.get("group_active") else 0
                 )
@@ -2703,12 +2704,12 @@ def admin_payment_method_edit(method_id):
     if request.method == "POST":
         update_payment_method(
             method_id,
-            name=request.form.get("name", "").strip(),
+            name=clean_plain_text(request.form.get("name", ""), max_len=100),
             emoji=request.form.get("emoji", "").strip() or "💳",
-            address=request.form.get("address", "").strip(),
-            instructions=request.form.get("instructions", "").strip(),
+            address=clean_plain_text(request.form.get("address", ""), max_len=200),
+            instructions=clean_rich_text(request.form.get("instructions", ""), max_len=1500),
             active=bool(request.form.get("active")),
-            currency=request.form.get("currency", "USD")
+            currency=clean_plain_text(request.form.get("currency", "USD"), max_len=10)
         )
         flash("تم تحديث طريقة الدفع", "success")
         return redirect(url_for("admin_payment_methods"))
@@ -2720,9 +2721,9 @@ def admin_payment_method_edit(method_id):
 @admin_required
 def admin_settings():
     if request.method == "POST":
-        set_setting("support_contact", request.form.get("support_contact", "").strip())
-        set_setting("whatsapp_number", request.form.get("whatsapp_number", "").strip().replace("+", ""))
-        set_setting("telegram_username", request.form.get("telegram_username", "").strip().lstrip("@"))
+        set_setting("support_contact", clean_plain_text(request.form.get("support_contact", ""), max_len=100))
+        set_setting("whatsapp_number", clean_plain_text(request.form.get("whatsapp_number", "").replace("+", ""), max_len=32))
+        set_setting("telegram_username", clean_plain_text(request.form.get("telegram_username", "").lstrip("@"), max_len=80))
         set_setting("usd_syp_rate", request.form.get("usd_syp_rate", "15000").strip())
         set_setting("pricing_mode", request.form.get("pricing_mode", "usd"))
         set_setting("manual_orders", "1" if request.form.get("manual_orders") else "0")
