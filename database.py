@@ -120,6 +120,12 @@ def ensure_indexes():
             conn.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
         except Exception:
             pass
+        # V53 security: IDOR fix — store proof filename in deposits table
+        # so ownership can be verified via DB instead of filename prefix.
+        try:
+            conn.execute("ALTER TABLE deposits ADD COLUMN proof_filename TEXT")
+        except Exception:
+            pass
         conn.commit()
 
 
@@ -1302,7 +1308,23 @@ def update_payment_method(method_id, name=None, emoji=None, address=None, instru
     return True
 
 
-def create_deposit(user_id, amount, method_id, proof, amount_usd=None):
+def can_download_proof(user_id: int, is_admin: bool, filename: str) -> bool:
+    """V53: IDOR fix — verify proof ownership via DB, not filename prefix.
+
+    Admins can download any proof. Regular users can only download proofs
+    that are linked to one of their own deposits (proof_filename column).
+    """
+    if is_admin:
+        return True
+    with db_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM deposits WHERE user_id=? AND proof_filename=? LIMIT 1",
+            (user_id, filename),
+        ).fetchone()
+    return row is not None
+
+
+def create_deposit(user_id, amount, method_id, proof, amount_usd=None, proof_filename=None):
     method = get_payment_method(method_id)
     if not method:
         return None
@@ -1316,9 +1338,9 @@ def create_deposit(user_id, amount, method_id, proof, amount_usd=None):
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO deposits (deposit_code,user_id,amount,method,proof,status,created_at,currency,amount_usd)
-            VALUES (?,?,?,?,?,?,?,?,?)
-        """, (code, user_id, amount, method["name"], proof, "pending", now, currency, amount_usd))
+            INSERT INTO deposits (deposit_code,user_id,amount,method,proof,status,created_at,currency,amount_usd,proof_filename)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (code, user_id, amount, method["name"], proof, "pending", now, currency, amount_usd, proof_filename))
         conn.commit()
         deposit_id = cur.lastrowid
     return deposit_id, code
