@@ -75,11 +75,11 @@
             <span>{{ t("topup_wallet") }}</span>
           </a>
         {% else %}
-          <a class="tg-nav-login" href="{{ url_for('login') }}">
+          <a class="tg-nav-login" href="{{ url_for('auth.login') }}">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/></svg>
             <span>{{ t("login") }}</span>
           </a>
-          <a class="tg-nav-cta" href="{{ url_for('register') }}">
+          <a class="tg-nav-cta" href="{{ url_for('auth.register') }}">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/><path d="M19 8v4M21 10h-4"/></svg>
             <span>{{ t("register") }}</span>
           </a>
@@ -164,8 +164,8 @@
     <div class="v43-footer-col">
       <h4>{{ "Links" if is_en else "روابط" }}</h4>
       <a href="{{ url_for('home') }}">{{ t("home") }}</a>
-      <a href="{{ url_for('login') }}">{{ t("login") }}</a>
-      <a href="{{ url_for('register') }}">{{ t("register") }}</a>
+      <a href="{{ url_for('auth.login') }}">{{ t("login") }}</a>
+      <a href="{{ url_for('auth.register') }}">{{ t("register") }}</a>
     </div>
     <div class="v43-footer-col">
       <h4>{{ "Legal" if is_en else "قانوني" }}</h4>
@@ -276,7 +276,7 @@
       {# V50.2 LOW: logout via POST (CSRF-protected) instead of a bare GET link.
          The action now requires a valid CSRF token, so cross-site <img>/<a>
          tricks cannot log the user out. #}
-      <form method="post" action="{{ url_for('logout') }}" style="display:inline">
+      <form method="post" action="{{ url_for('auth.logout') }}" style="display:inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button class="btn primary" type="submit">{{ "Yes, sign out" if is_en else "نعم، خروج" }}</button>
       </form>
