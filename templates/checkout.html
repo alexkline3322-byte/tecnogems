@@ -53,7 +53,7 @@
   </form>
 </div>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 function clearPlayerErr() {
   document.getElementById('err-player-id').textContent = '';
   document.getElementById('player_id').classList.remove('input-err');

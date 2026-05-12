@@ -52,7 +52,7 @@
   </div>
 </section>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 function updatePaymentInfo(){
   const sel = document.getElementById('payment-method');
   if(!sel) return;
