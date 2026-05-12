@@ -161,21 +161,26 @@ def wishlist_toggle(user_id, provider, game_key):
         return added
 
 
+def _escape_like(q):
+    """Escape special LIKE wildcard characters to prevent injection."""
+    return q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def search_suggest(q, limit=8):
     """Lightweight autocomplete across games (name) + product groups (label)."""
     with db_conn() as conn:
-        qlike = f"%{q}%"
+        qlike = f"%{_escape_like(q)}%"
         games = [dict(r) for r in conn.execute("""
             SELECT 'game' AS kind, provider, game_key, name AS label, image_url
             FROM games
-            WHERE active=1 AND name LIKE ? COLLATE NOCASE
+            WHERE active=1 AND name LIKE ? ESCAPE '\\' COLLATE NOCASE
             ORDER BY name LIMIT ?
         """, (qlike, limit)).fetchall()]
         remaining = max(1, limit - len(games))
         products = [dict(r) for r in conn.execute("""
             SELECT 'product' AS kind, provider, game_key, name AS label
             FROM products
-            WHERE active=1 AND name LIKE ? COLLATE NOCASE
+            WHERE active=1 AND name LIKE ? ESCAPE '\\' COLLATE NOCASE
             GROUP BY provider, game_key, name
             ORDER BY name LIMIT ?
         """, (qlike, remaining)).fetchall()]
@@ -1211,7 +1216,7 @@ def list_users():
 def search_users(q=None):
     with db_conn() as conn:
         if q:
-            like = f"%{q}%"
+            like = f"%{_escape_like(q)}%"
             args = [like, like, like]
             extra_ids = []
             if str(q).isdigit():
@@ -1223,8 +1228,8 @@ def search_users(q=None):
                 "u.active,u.email_verified,u.created_at "
                 "FROM users u "
                 "LEFT JOIN orders o ON o.user_id=u.id "
-                "WHERE u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? "
-                "OR o.player_id LIKE ?"
+                "WHERE u.name LIKE ? ESCAPE '\\' OR u.email LIKE ? ESCAPE '\\' OR u.phone LIKE ? ESCAPE '\\' "
+                "OR o.player_id LIKE ? ESCAPE '\\'"
                 + (" OR u.id=?" if extra_ids else "")
                 + " ORDER BY u.id DESC LIMIT 300"
             )
