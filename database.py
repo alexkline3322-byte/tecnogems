@@ -114,6 +114,12 @@ def ensure_indexes():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)")
         except Exception:
             pass
+        # V53 security: session_version — incremented on password change to
+        # invalidate all other sessions for the user.
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
+        except Exception:
+            pass
         conn.commit()
 
 
@@ -639,7 +645,7 @@ def reset_user_password(token, new_password):
             return False, "انتهت صلاحية رابط الاستعادة. اطلب رابطًا جديدًا."
 
         conn.execute(
-            "UPDATE users SET password_hash=?, reset_token=NULL, reset_token_created_at=NULL WHERE id=?",
+            "UPDATE users SET password_hash=?, reset_token=NULL, reset_token_created_at=NULL, session_version=COALESCE(session_version,1)+1 WHERE id=?",
             (generate_password_hash(new_password), row["id"])
         )
         conn.commit()

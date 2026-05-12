@@ -914,6 +914,13 @@ def current_user():
             return None
     except Exception:
         pass
+    # V53 SECURITY: invalidate session when password was changed (session_version
+    # mismatch means the password was reset after this session was created).
+    db_version = int(user.get("session_version") or 1)
+    sess_version = session.get("sess_v")
+    if sess_version is not None and int(sess_version) != db_version:
+        session.clear()
+        return None
     return user
 
 
@@ -1037,6 +1044,10 @@ def login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         if not session.get("user_id"):
+            flash("يرجى تسجيل الدخول أولًا", "warning")
+            return redirect("/login")
+        # V53 SECURITY: validate session is still valid (e.g. password changed).
+        if not current_user():
             flash("يرجى تسجيل الدخول أولًا", "warning")
             return redirect("/login")
         return fn(*args, **kwargs)
@@ -1487,6 +1498,7 @@ def login():
             # session data before assigning the authenticated user id.
             session.clear()
             session["user_id"] = user["id"]
+            session["sess_v"] = int(user.get("session_version") or 1)
             session.permanent = True
             # V51 task B: for admins with 2FA enabled, mark the session
             # as "password-only" (not yet 2FA-verified). admin_required
