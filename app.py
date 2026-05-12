@@ -28,6 +28,8 @@ from database import (
     list_all_games_for_admin, update_game_image, list_all_products_for_admin, update_product_sort_orders, update_profit_margin, seed_local_provider_catalog, attach_generated_posters,
     # V51 task B: admin 2FA persistence helpers
     set_user_totp_secret, enable_user_totp, disable_user_totp, update_user_backup_codes,
+    # V53: IDOR fix on proof downloads
+    can_download_proof,
 )
 
 # V51 task B: TOTP 2FA helpers for admin accounts (opt-in per admin)
@@ -1273,7 +1275,7 @@ def legacy_redirect(rest):
     return redirect("/" + rest, code=301)
 
 
-# Secure proof file delivery (login required, owner-or-admin)
+# Secure proof file delivery (login required, owner-or-admin via DB check)
 @app.route("/uploads/proof/<path:filename>")
 @login_required
 def serve_proof(filename):
@@ -1281,14 +1283,30 @@ def serve_proof(filename):
     if not user:
         abort(403)
     safe = secure_filename(filename)
-    # File names start with the owner user id: "<uid>_<ts>_<name>"
-    owner_ok = safe.startswith(f"{user['id']}_") or user.get("role") == "admin"
-    if not owner_ok:
+    if safe != filename:
+        abort(400)
+
+    is_admin = user.get("role") == "admin"
+
+    if not can_download_proof(user["id"], is_admin, safe):
+        log_audit(
+            "PROOF_DOWNLOAD_DENIED",
+            actor_id=user["id"],
+            metadata={"filename": safe},
+        )
         abort(403)
+
     full = os.path.join(app.config["UPLOAD_FOLDER"], safe)
     if not os.path.exists(full):
-        abort(404)
-    resp = send_from_directory(app.config["UPLOAD_FOLDER"], safe)
+        # Return 403 instead of 404 to avoid file-existence enumeration
+        abort(403)
+
+    log_audit(
+        "PROOF_DOWNLOAD",
+        actor_id=user["id"],
+        metadata={"filename": safe, "admin_viewing": is_admin},
+    )
+    resp = send_from_directory(app.config["UPLOAD_FOLDER"], safe, as_attachment=False)
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -1699,6 +1717,7 @@ def wallet():
             return redirect(url_for("wallet"))
         proof_file = request.files.get("proof_image")
         proof_parts = []
+        proof_filename_saved = None
 
         if proof_text:
             proof_parts.append(proof_text)
@@ -1712,9 +1731,11 @@ def wallet():
                 flash("الملف لا يطابق نوعه المُعلَن. أرسل صورة (JPG/PNG/WebP/GIF) حقيقياً.", "danger")
                 return redirect(url_for("wallet"))
             filename = secure_filename(proof_file.filename)
-            filename = f"{user['id']}_{int(__import__('time').time())}_{filename}"
+            ext = os.path.splitext(filename)[1].lower()
+            filename = f"{user['id']}_{secrets.token_urlsafe(16)}{ext}"
             save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
             proof_file.save(save_path)
+            proof_filename_saved = filename
             # Use authenticated route instead of public /static/uploads/
             proof_parts.append(f"صورة: /uploads/proof/{filename}")
 
@@ -1744,7 +1765,8 @@ def wallet():
             flash(f"المبلغ يتجاوز الحد الأقصى المسموح به ({MAX_DEPOSIT_USD:.0f}$)", "danger")
             return redirect(url_for("wallet"))
 
-        dep = create_deposit(user["id"], amount, method_id, proof, amount_usd=amount_usd)
+        dep = create_deposit(user["id"], amount, method_id, proof, amount_usd=amount_usd,
+                             proof_filename=proof_filename_saved)
         if dep:
             flash(f"تم إرسال طلب الشحن {dep[1]}، بانتظار موافقة الإدارة", "success")
         else:
