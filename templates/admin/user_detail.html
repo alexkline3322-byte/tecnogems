@@ -16,7 +16,7 @@
       <h2>الملخص</h2>
       <p><b>عدد طلبات الشحن:</b> {{ summary.deposits_count }}</p>
       <p><b>طلبات الشحن المقبولة:</b> {{ summary.deposits_approved }}</p>
-      <p><b>إجمالي مبالغ الشحن المدفوعة:</b> {{ summary.deposits_total_paid }}</p>
+      <p><b>إجمالي مبالغ الشحن المدفوعة:</b> {{ wallet_money(summary.deposits_total_paid) }}</p>
       <p><b>عدد الطلبات:</b> {{ summary.orders_count }}</p>
       <p><b>إجمالي العمليات:</b> {{ wallet_money(summary.orders_total) }}</p>
     </div>
