@@ -76,10 +76,25 @@ cp "$PROJECT/templates/admin/deposits.html"      "$BACKUP_DIR/templates/admin/de
 cp "$PROJECT/templates/wallet_transactions.html" "$BACKUP_DIR/templates/wallet_transactions.html"
 echo "    ok"
 
-# [3] Build a zip (so admins can replay later if needed)
+# [3] Build a zip (so admins can replay later if needed). Non-fatal.
 echo "[3/7] Packaging $ZIP ..."
-(cd "$SRC" && zip -rq "$ZIP" tecnogems/)
-echo "    $(ls -lh $ZIP | awk '{print $5, $9}')"
+if command -v zip >/dev/null 2>&1; then
+    (cd "$SRC" && zip -rq "$ZIP" tecnogems/) && echo "    $(ls -lh $ZIP | awk '{print $5, $9}')"
+elif command -v python3 >/dev/null 2>&1; then
+    python3 - <<PY_ZIP
+import os, zipfile
+src = "$SRC"
+out = "$ZIP"
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for root, _, files in os.walk(src):
+        for f in files:
+            full = os.path.join(root, f)
+            z.write(full, os.path.relpath(full, src))
+print("    packaged via python zipfile:", out)
+PY_ZIP
+else
+    echo "    (skipped: no zip and no python3; backup dir alone is enough for rollback)"
+fi
 
 # [4] Copy hotfix over project
 echo "[4/7] Applying hotfix files over $PROJECT ..."
@@ -90,9 +105,12 @@ cp "$SRC/tecnogems/templates/wallet_transactions.html" "$PROJECT/templates/walle
 rm -rf "$SRC"
 echo "    ok"
 
-# [5] Smoke test BEFORE restarting
+# [5] Smoke test BEFORE restarting. We MUST cd into $PROJECT because
+# wsgi.py is in that directory — Python's sys.path starts with CWD, so
+# running the check from /root (where `curl | bash` leaves us) would
+# fail with ModuleNotFoundError even if the code is fine.
 echo "[5/7] Smoke-testing the updated app (import check) ..."
-SMOKE=$("$PROJECT/.venv/bin/python" -c "from wsgi import app; print('SMOKE_OK')" 2>&1 || true)
+SMOKE=$(cd "$PROJECT" && "$PROJECT/.venv/bin/python" -c "from wsgi import app; print('SMOKE_OK')" 2>&1 || true)
 if ! echo "$SMOKE" | grep -q "SMOKE_OK"; then
     echo "!!! Smoke test FAILED. Rolling back WITHOUT restart (zero downtime)."
     echo "---- smoke output ----"
