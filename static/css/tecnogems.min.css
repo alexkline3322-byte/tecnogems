@@ -2519,3 +2519,22 @@ input:focus, select:focus, textarea:focus {
   color: #6ee7ff;
   border: 1px solid rgba(110,231,255,.4);
 }
+
+
+/* ===========================================================================
+ * V49.1 — layout stability patch
+ * ---------------------------------------------------------------------------
+ * Problem: short pages have no vertical scrollbar, long pages do. When the
+ * browser adds the scrollbar, the viewport width changes by ~15px and every
+ * centered .container (width: min(1180px, 94%); margin:auto) jumps sideways.
+ * In RTL the jump is visible as the page "tilting" slightly to the left on
+ * first paint, then snapping back once JS/fonts finish loading.
+ *
+ * Fix: always reserve space for the scrollbar gutter, so short and long
+ * pages have identical inner widths. Falls back gracefully on older
+ * browsers that ignore scrollbar-gutter.
+ * =========================================================================== */
+html {
+  scrollbar-gutter: stable;
+  overflow-y: scroll;
+}

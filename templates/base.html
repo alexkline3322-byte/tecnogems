@@ -67,7 +67,11 @@
       <div class="tg-nav-primary">
         {% if current_user %}
           <a class="tg-nav-link tg-nav-balance" href="{{ url_for('wallet') }}" title="{{ t('balance') }}">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M5 9h11a3 3 0 0 1 0 6H8a3 3 0 0 0 0 6h11"/></svg>
+            {# V49.1: replaced the old $-like stroke icon with a neutral wallet
+               glyph so SYP balances don't appear to be prefixed with a dollar
+               sign. The amount itself already carries its correct unit suffix
+               (ل.س for SYP, $ for USD) via wallet_money(). #}
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2H5a2 2 0 0 1-2-2z"/><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V10a1 1 0 0 0-1-1H5a2 2 0 0 1-2-2"/><path d="M17 14h.01"/></svg>
             <span>{{ wallet_money(current_user.balance) }}</span>
           </a>
           <a class="tg-nav-link tg-nav-topup" href="{{ url_for('wallet') }}#deposit-card">

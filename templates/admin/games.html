@@ -5,8 +5,14 @@
   ابحث عن اللعبة ثم فعّلها لتظهر في واجهة الموقع. إذا كانت لعبة لديها أقسام مفعّلة للواجهة الرئيسية، ستظهر الأقسام بدل اللعبة الأصلية.
 </p>
 
+{# V49.1: wrap the whole list + submit button inside a SINGLE form. Previously
+   the <form> self-closed on line 1 and the checkboxes referenced it via the
+   HTML form="" attribute. That attribute works in modern browsers, but some
+   setups (particularly with CSP + async form submission) submit an EMPTY
+   body — which made "save visible games" look like a no-op: the handler
+   deactivated every game because getlist('active_game') returned []. #}
 <form id="activeGamesForm" method="post" action="{{ url_for('admin_games') }}">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"></form>
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
 <div class="card admin-card">
   <div class="catalog-tools">
@@ -24,7 +30,7 @@
       <div class="admin-game-row {% if g.active %}is-active{% else %}is-hidden-initial{% endif %}"
            data-game-name="{{ (g.name ~ ' ' ~ g.game_key ~ ' ' ~ g.provider)|lower }}">
         <label>
-          <input form="activeGamesForm" type="checkbox" name="active_game" value="{{ g.provider }}::{{ g.game_key }}" {% if g.active %}checked{% endif %}>
+          <input type="checkbox" name="active_game" value="{{ g.provider }}::{{ g.game_key }}" {% if g.active %}checked{% endif %}>
           <b>{{ g.emoji or '🎮' }} {{ g.name }}</b>
           <span class="muted">({{ g.provider }} / {{ g.game_key }}) • {{ g.product_count or 0 }} باقة</span>
         </label>
@@ -35,9 +41,33 @@
           {% endif %}
           <a class="btn small" href="{{ url_for('admin_game_products', provider=g.provider, game_key=g.game_key) }}">ترتيب الباقات</a>
         </div>
+      </div>
+    {% endfor %}
+  </div>
 
-        <form method="post" action="{{ url_for('admin_game_image', provider=g.provider, game_key=g.game_key) }}" enctype="multipart/form-data" class="image-upload-inline" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button class="btn primary" type="submit">حفظ الألعاب المعروضة</button>
+</div>
+</form>
+
+{# V49.1: per-row image-upload forms live OUTSIDE the parent form. Nested
+   <form> elements are invalid HTML — browsers silently drop the inner one
+   and the "حفظ الصورة" button becomes a submit for the PARENT form, which
+   uploaded nothing and cleared every game's active state. #}
+<div class="card admin-card" style="margin-top:16px">
+  <h2>تعديل صور الألعاب</h2>
+  <p class="muted">ارفع صورة من جهازك، أو أدخل رابط صورة مباشر.</p>
+  <div class="admin-games-list">
+    {% for g in games %}
+      <div class="admin-game-row" style="gap:10px">
+        <div style="display:flex;gap:10px;align-items:center">
+          {% if g.image_url %}
+            <img src="{{ g.image_url }}" alt="{{ g.name }}" style="width:40px;height:40px;object-fit:cover;border-radius:10px;border:1px solid rgba(255,255,255,.12)">
+          {% endif %}
+          <b>{{ g.emoji or '🎮' }} {{ g.name }}</b>
+          <span class="muted">({{ g.provider }} / {{ g.game_key }})</span>
+        </div>
+        <form method="post" action="{{ url_for('admin_game_image', provider=g.provider, game_key=g.game_key) }}" enctype="multipart/form-data" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="file" name="image" accept="image/*" style="max-width:180px">
           <input type="text" name="image_url" placeholder="أو رابط صورة" style="max-width:220px">
           <button class="btn small" type="submit">حفظ الصورة</button>
@@ -45,8 +75,6 @@
       </div>
     {% endfor %}
   </div>
-
-  <button form="activeGamesForm" class="btn primary" type="submit">حفظ الألعاب المعروضة</button>
 </div>
 
 <h2>إضافة/تفعيل لعبة من المزود يدويًا</h2>

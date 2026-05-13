@@ -1990,16 +1990,31 @@ def admin_user_detail(user_id):
 @(limiter.limit("30 per minute") if limiter else (lambda f: f))
 def admin_user_balance(user_id):
     try:
-        new_balance = float(request.form.get("amount", "0") or 0)
+        raw_amount = float(request.form.get("amount", "0") or 0)
     except Exception:
         flash("أدخل رقمًا صحيحًا للرصيد", "danger")
         return redirect(safe_next_url("admin_users"))
 
+    # V49.1: let the admin pick USD or SYP when setting a balance. Previously
+    # the raw number was always interpreted as USD, which was dangerous for
+    # SYP-heavy operators (e.g. typing "50000" meant $50,000 by mistake).
+    # The user's balance is still stored internally as USD; SYP input is
+    # converted once, at write time, using the current exchange rate.
+    currency = (request.form.get("currency") or "USD").upper()
+    if currency == "SYP":
+        rate = get_usd_syp_rate()
+        if not rate or rate <= 0:
+            flash("سعر الصرف غير صحيح. عدِّل الإعدادات أولاً.", "danger")
+            return redirect(safe_next_url("admin_users"))
+        new_balance = round(raw_amount / rate, 4)
+    else:
+        new_balance = raw_amount
+
     # V50 SECURITY (HG): bound admin balance edits to [0, MAX_ADMIN_BALANCE].
     # Prevents a compromised admin account from setting negative or
-    # astronomical balances.
+    # astronomical balances. Bound is checked on the USD value we will store.
     if not (0 <= new_balance <= MAX_ADMIN_BALANCE):
-        flash(f"القيمة يجب أن تكون بين 0 و {MAX_ADMIN_BALANCE:.0f}", "danger")
+        flash(f"القيمة يجب أن تكون بين 0 و {MAX_ADMIN_BALANCE:.0f}$ (بعد التحويل)", "danger")
         return redirect(safe_next_url("admin_users"))
 
     admin = current_user()

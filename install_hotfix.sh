@@ -1,12 +1,15 @@
 #!/bin/bash
-# V49 Currency Hotfix — one-shot installer.
+# V49 Currency + UI Hotfix — one-shot installer.
 #
 # Usage (run on the server):
 #   curl -fsSL https://raw.githubusercontent.com/alexkline3322-byte/tecnogems/hotfix/v49-currency-deposit-500/install_hotfix.sh | bash
 #
+# If GitHub's CDN is serving an old cached copy, pin to a commit SHA instead:
+#   curl -fsSL https://raw.githubusercontent.com/alexkline3322-byte/tecnogems/<SHA>/install_hotfix.sh | bash
+#
 # What it does:
-#   1. Downloads the 4 modified files from the hotfix branch on GitHub
-#   2. Builds a zip in /root/
+#   1. Downloads the modified files from the hotfix branch on GitHub
+#   2. Builds a zip in /root/ (convenience backup)
 #   3. Backs up the current /root/project files
 #   4. Applies the hotfix
 #   5. Smoke-tests + restarts + health-checks
@@ -19,9 +22,23 @@ BASE="https://raw.githubusercontent.com/alexkline3322-byte/tecnogems/${BRANCH}"
 TS=$(date +%Y%m%d_%H%M%S)
 BACKUP_DIR="/root/hotfix_backup_$TS"
 SRC="/tmp/v49_hotfix_src_$TS"
-ZIP="/root/tecnogems_V49_HOTFIX_currency_$TS.zip"
+ZIP="/root/tecnogems_V49_HOTFIX_$TS.zip"
 
-echo "=== V49 Currency Hotfix installer ($TS) ==="
+# List of files patched by this hotfix.
+# Format: "<relative-path-inside-project>"
+FILES=(
+    "database.py"
+    "app.py"
+    "templates/base.html"
+    "templates/admin/user_detail.html"
+    "templates/admin/deposits.html"
+    "templates/admin/users.html"
+    "templates/admin/games.html"
+    "templates/wallet_transactions.html"
+    "static/css/tecnogems.min.css"
+)
+
+echo "=== V49 Currency + UI Hotfix installer ($TS) ==="
 
 # Sanity: /root/project must exist
 if [ ! -d "$PROJECT" ]; then
@@ -33,21 +50,20 @@ if [ ! -x "$PROJECT/.venv/bin/python" ]; then
     exit 1
 fi
 
-# [1] Download the 4 modified files
-echo "[1/7] Downloading modified files from branch $BRANCH ..."
+# [1] Download modified files
+echo "[1/7] Downloading ${#FILES[@]} modified files from branch $BRANCH ..."
 rm -rf "$SRC"
-mkdir -p "$SRC/tecnogems/templates/admin"
 
 download() {
-    local url="$1" out="$2"
+    local url="$1" out="$2" min_size="${3:-200}"
+    mkdir -p "$(dirname "$out")"
     if ! curl -fsSL -o "$out" "$url"; then
         echo "    !!! Failed to download: $url"
         exit 1
     fi
-    # A GitHub 404 is HTML, not what we want. Sanity-check size.
     local size=$(stat -c%s "$out" 2>/dev/null || wc -c < "$out")
-    if [ -z "$size" ] || [ "$size" -lt 200 ]; then
-        echo "    !!! File suspiciously small ($size bytes): $out"
+    if [ -z "$size" ] || [ "$size" -lt "$min_size" ]; then
+        echo "    !!! File suspiciously small ($size bytes < $min_size): $out"
         echo "    Content:"
         head -5 "$out"
         exit 1
@@ -55,28 +71,37 @@ download() {
     echo "    ok: $(basename $out) ($size bytes)"
 }
 
-download "$BASE/database.py"                           "$SRC/tecnogems/database.py"
-download "$BASE/templates/admin/user_detail.html"      "$SRC/tecnogems/templates/admin/user_detail.html"
-download "$BASE/templates/admin/deposits.html"         "$SRC/tecnogems/templates/admin/deposits.html"
-download "$BASE/templates/wallet_transactions.html"    "$SRC/tecnogems/templates/wallet_transactions.html"
+for rel in "${FILES[@]}"; do
+    download "$BASE/$rel" "$SRC/tecnogems/$rel"
+done
 
-# Verify database.py looks like Python
-if ! head -3 "$SRC/tecnogems/database.py" | grep -q '^import '; then
-    echo "!!! database.py does not look like Python. Aborting."
-    head -5 "$SRC/tecnogems/database.py"
-    exit 1
-fi
+# Verify database.py + app.py look like Python (catches 404 HTML pages)
+for py in database.py app.py; do
+    if ! head -5 "$SRC/tecnogems/$py" | grep -qE '^(import|from|#!)'; then
+        echo "!!! $py does not look like Python. Aborting."
+        head -5 "$SRC/tecnogems/$py"
+        exit 1
+    fi
+done
 
 # [2] Backup current files
 echo "[2/7] Backing up current files to $BACKUP_DIR ..."
-mkdir -p "$BACKUP_DIR/templates/admin"
-cp "$PROJECT/database.py"                        "$BACKUP_DIR/database.py"
-cp "$PROJECT/templates/admin/user_detail.html"   "$BACKUP_DIR/templates/admin/user_detail.html"
-cp "$PROJECT/templates/admin/deposits.html"      "$BACKUP_DIR/templates/admin/deposits.html"
-cp "$PROJECT/templates/wallet_transactions.html" "$BACKUP_DIR/templates/wallet_transactions.html"
+for rel in "${FILES[@]}"; do
+    src="$PROJECT/$rel"
+    dst="$BACKUP_DIR/$rel"
+    if [ -f "$src" ]; then
+        mkdir -p "$(dirname "$dst")"
+        cp "$src" "$dst"
+    else
+        # Record that this file did not exist in the prior install; rollback
+        # will remove it rather than restore a wrong version.
+        mkdir -p "$(dirname "$dst")"
+        echo "MISSING_IN_ORIGINAL" > "${dst}.missing"
+    fi
+done
 echo "    ok"
 
-# [3] Build a zip (so admins can replay later if needed). Non-fatal.
+# [3] Build a zip (non-fatal)
 echo "[3/7] Packaging $ZIP ..."
 if command -v zip >/dev/null 2>&1; then
     (cd "$SRC" && zip -rq "$ZIP" tecnogems/) && echo "    $(ls -lh $ZIP | awk '{print $5, $9}')"
@@ -96,19 +121,26 @@ else
     echo "    (skipped: no zip and no python3; backup dir alone is enough for rollback)"
 fi
 
-# [4] Copy hotfix over project
+# [4] Copy hotfix files over project
 echo "[4/7] Applying hotfix files over $PROJECT ..."
-cp "$SRC/tecnogems/database.py"                        "$PROJECT/database.py"
-cp "$SRC/tecnogems/templates/admin/user_detail.html"   "$PROJECT/templates/admin/user_detail.html"
-cp "$SRC/tecnogems/templates/admin/deposits.html"      "$PROJECT/templates/admin/deposits.html"
-cp "$SRC/tecnogems/templates/wallet_transactions.html" "$PROJECT/templates/wallet_transactions.html"
+for rel in "${FILES[@]}"; do
+    mkdir -p "$(dirname "$PROJECT/$rel")"
+    cp "$SRC/tecnogems/$rel" "$PROJECT/$rel"
+done
 rm -rf "$SRC"
 echo "    ok"
 
-# [5] Smoke test BEFORE restarting. We MUST cd into $PROJECT because
-# wsgi.py is in that directory — Python's sys.path starts with CWD, so
-# running the check from /root (where `curl | bash` leaves us) would
-# fail with ModuleNotFoundError even if the code is fine.
+# [5] Smoke test BEFORE restarting. CD into $PROJECT so wsgi is importable.
+rollback() {
+    for rel in "${FILES[@]}"; do
+        if [ -f "$BACKUP_DIR/${rel}.missing" ]; then
+            rm -f "$PROJECT/$rel"
+        elif [ -f "$BACKUP_DIR/$rel" ]; then
+            cp "$BACKUP_DIR/$rel" "$PROJECT/$rel"
+        fi
+    done
+}
+
 echo "[5/7] Smoke-testing the updated app (import check) ..."
 SMOKE=$(cd "$PROJECT" && "$PROJECT/.venv/bin/python" -c "from wsgi import app; print('SMOKE_OK')" 2>&1 || true)
 if ! echo "$SMOKE" | grep -q "SMOKE_OK"; then
@@ -116,10 +148,7 @@ if ! echo "$SMOKE" | grep -q "SMOKE_OK"; then
     echo "---- smoke output ----"
     echo "$SMOKE"
     echo "----------------------"
-    cp "$BACKUP_DIR/database.py"                        "$PROJECT/database.py"
-    cp "$BACKUP_DIR/templates/admin/user_detail.html"   "$PROJECT/templates/admin/user_detail.html"
-    cp "$BACKUP_DIR/templates/admin/deposits.html"      "$PROJECT/templates/admin/deposits.html"
-    cp "$BACKUP_DIR/templates/wallet_transactions.html" "$PROJECT/templates/wallet_transactions.html"
+    rollback
     echo ">>> ROLLED BACK (backup kept at $BACKUP_DIR)"
     exit 1
 fi
@@ -134,10 +163,7 @@ if curl -fsSI http://127.0.0.1:5000/ >/dev/null 2>&1; then
 else
     echo "!!! Health check FAILED. Rolling back."
     journalctl -u game-topup --no-pager -n 25
-    cp "$BACKUP_DIR/database.py"                        "$PROJECT/database.py"
-    cp "$BACKUP_DIR/templates/admin/user_detail.html"   "$PROJECT/templates/admin/user_detail.html"
-    cp "$BACKUP_DIR/templates/admin/deposits.html"      "$PROJECT/templates/admin/deposits.html"
-    cp "$BACKUP_DIR/templates/wallet_transactions.html" "$PROJECT/templates/wallet_transactions.html"
+    rollback
     systemctl restart game-topup
     sleep 3
     echo ">>> ROLLED BACK"
@@ -151,12 +177,12 @@ echo ""
 echo "Summary:"
 echo "  - Backup of old files : $BACKUP_DIR"
 echo "  - Hotfix zip kept at  : $ZIP"
+echo "  - Files patched       : ${#FILES[@]}"
 echo ""
 echo "To roll back manually later:"
-echo "  cp $BACKUP_DIR/database.py                        $PROJECT/"
-echo "  cp $BACKUP_DIR/templates/admin/user_detail.html   $PROJECT/templates/admin/"
-echo "  cp $BACKUP_DIR/templates/admin/deposits.html      $PROJECT/templates/admin/"
-echo "  cp $BACKUP_DIR/templates/wallet_transactions.html $PROJECT/templates/"
+for rel in "${FILES[@]}"; do
+    echo "  cp $BACKUP_DIR/$rel $PROJECT/$rel"
+done
 echo "  systemctl restart game-topup"
 echo ""
 systemctl status game-topup --no-pager | head -10
