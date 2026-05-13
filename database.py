@@ -1257,11 +1257,20 @@ def get_user_by_id(user_id):
 
 
 def user_financial_summary(user_id):
+    # V49-HOTFIX: the previous version used SUM(amount) which was WRONG because
+    # `amount` is in the deposit method's native currency (SYP or USD) — so a
+    # user with a 5000 SYP deposit and a 10 USD deposit had a reported total
+    # of 5010, mixing two unrelated currencies. Always sum `amount_usd` so the
+    # total is expressed in a single unit (USD internally, then rendered by
+    # wallet_money in the template).
     with db_conn() as conn:
         return {
             "deposits_count": conn.execute("SELECT COUNT(*) c FROM deposits WHERE user_id=?", (user_id,)).fetchone()["c"],
             "deposits_approved": conn.execute("SELECT COUNT(*) c FROM deposits WHERE user_id=? AND status='approved'", (user_id,)).fetchone()["c"],
-            "deposits_total_paid": conn.execute("SELECT COALESCE(SUM(amount),0) s FROM deposits WHERE user_id=? AND status='approved'", (user_id,)).fetchone()["s"],
+            "deposits_total_paid": conn.execute(
+                "SELECT COALESCE(SUM(COALESCE(amount_usd, 0)),0) s "
+                "FROM deposits WHERE user_id=? AND status='approved'", (user_id,)
+            ).fetchone()["s"],
             "orders_count": conn.execute("SELECT COUNT(*) c FROM orders WHERE user_id=?", (user_id,)).fetchone()["c"],
             "orders_total": conn.execute("SELECT COALESCE(SUM(price),0) s FROM orders WHERE user_id=?", (user_id,)).fetchone()["s"],
         }
@@ -1329,8 +1338,27 @@ def create_deposit(user_id, amount, method_id, proof, amount_usd=None, proof_fil
     if not method:
         return None
     currency = method.get("currency", "USD")
-    if amount_usd is None:
-        amount_usd = amount
+    # V49-HOTFIX (defense in depth): always recompute amount_usd server-side
+    # from the amount + method currency + current rate, regardless of what the
+    # caller passed. This guarantees that:
+    #   1. A 5000 SYP deposit is stored as amount=5000, currency='SYP',
+    #      amount_usd=(5000/rate), NOT 5000 USD.
+    #   2. Approving the deposit credits the correct USD value to the wallet.
+    #   3. A compromised form handler cannot inflate amount_usd by a factor
+    #      of the exchange rate (which was the user-reported symptom:
+    #      "5000 SYP was treated as $5000 multiplied by the rate").
+    try:
+        _amt = float(amount or 0)
+    except Exception:
+        _amt = 0.0
+    if currency == "SYP":
+        try:
+            _rate_val = float(get_setting("usd_syp_rate", "15000") or 15000)
+        except Exception:
+            _rate_val = 15000.0
+        amount_usd = round(_amt / _rate_val, 4) if _rate_val > 0 else 0.0
+    else:
+        amount_usd = round(_amt, 4)
     now = int(time.time())
     # V50 SECURITY (CA): same predictability issue as order_code. Use a
     # random token so deposit codes cannot be enumerated by attackers.
@@ -1394,7 +1422,29 @@ def update_deposit(deposit_id, status):
                 return False  # تمت المعالجة مسبقاً
             if status == "approved":
                 dep = cur.execute("SELECT * FROM deposits WHERE id=?", (deposit_id,)).fetchone()
-                amount_to_add = _amount_to_usd(dep["amount"], dep.get("currency", "USD"))
+                # V49-HOTFIX: `dep` is a sqlite3.Row which has NO .get() method —
+                # the previous call `dep.get("currency", "USD")` raised AttributeError
+                # and caused a 500 error every time an admin clicked Approve.
+                # Also, we now prefer the pre-computed `amount_usd` column (filled
+                # by create_deposit at submission time) over re-converting `amount`.
+                # This way approval uses the exact rate that was shown to the user
+                # when they submitted the deposit — not today's rate if it changed.
+                dep_keys = dep.keys()
+                amount_usd_stored = None
+                if "amount_usd" in dep_keys:
+                    try:
+                        v = dep["amount_usd"]
+                        if v is not None and float(v) > 0:
+                            amount_usd_stored = float(v)
+                    except Exception:
+                        amount_usd_stored = None
+                if amount_usd_stored is not None:
+                    amount_to_add = round(amount_usd_stored, 4)
+                else:
+                    # Legacy deposits (amount_usd missing/0): fall back to converting
+                    # the paid amount using the deposit's currency column.
+                    dep_currency = dep["currency"] if "currency" in dep_keys else "USD"
+                    amount_to_add = _amount_to_usd(dep["amount"], dep_currency or "USD")
                 cur.execute("UPDATE users SET balance = balance + ? WHERE id=?",
                              (amount_to_add, dep["user_id"]))
             conn.commit()

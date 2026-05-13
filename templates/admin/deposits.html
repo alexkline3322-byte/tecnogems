@@ -24,7 +24,12 @@
           <td>{{ d.deposit_code }}</td>
           <td>{{ d.user_name }}<br><span class="muted">{{ d.user_email }}</span></td>
           <td>{{ "%.2f"|format(d.amount) }} {{ "ل.س" if d.currency=="SYP" else "$" }}</td>
-          <td>{{ wallet_money((d.amount if display_currency=="SYP" and d.currency=="SYP" else (d.amount_usd or d.amount))) }}</td>
+          {# V49-HOTFIX: always pass amount_usd (internal USD value) to
+             wallet_money. Previously for SYP deposits the raw SYP amount was
+             passed, and since wallet_money treats its input as USD and
+             multiplies by the rate for SYP display, a 5000 SYP deposit was
+             rendered as 5000 * rate = 75,000,000 ل.س. #}
+          <td>{{ wallet_money(d.amount_usd or 0) }}</td>
           <td>{{ d.method }}</td>
           <td style="max-width:280px;white-space:normal">
             {% for line in (d.proof or '').split('\n') %}

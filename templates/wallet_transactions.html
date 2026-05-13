@@ -29,7 +29,8 @@
             {{ "%.2f"|format(d.amount) }}
             {% if d.currency == "SYP" %}ل.س{% else %}${% endif %}
           </td>
-          <td>{{ wallet_money(d.amount if display_currency=="SYP" and d.currency=="SYP" else (d.amount_usd or d.amount)) }}</td>
+          {# V49-HOTFIX: see admin/deposits.html — pass amount_usd, not amount. #}
+          <td>{{ wallet_money(d.amount_usd or 0) }}</td>
           <td>{{ d.method }}</td>
           <td>
             {% if d.status == 'approved' %}
