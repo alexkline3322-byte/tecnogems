@@ -2,7 +2,7 @@
 {% block content %}
 <section style="padding:34px 0">
   <h1>المستخدمون</h1>
-  <p class="muted">الرصيد الذي تكتبه هنا يصبح رصيد المستخدم النهائي، وليس إضافة أو طرح.</p>
+  <p class="muted">الرصيد الذي تكتبه هنا يصبح رصيد المستخدم النهائي، وليس إضافة أو طرح. اختر عملة المبلغ قبل الضغط على تعيين.</p>
 
   <form method="get" class="card" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:16px">
     <label style="flex:1;min-width:240px">بحث عن مستخدم
@@ -25,9 +25,14 @@
           <td>{{ wallet_money(u.balance) }}</td>
           <td><a class="btn small" href="{{ url_for('admin_user_detail', user_id=u.id) }}">عرض العمليات</a></td>
           <td>
-            <form method="post" action="{{ url_for('admin_user_balance', user_id=u.id) }}" style="display:flex;gap:8px">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <input name="amount" placeholder="الرصيد الجديد" style="min-width:120px">
+            {# V49.1: currency selector (USD default, SYP converted via current rate) #}
+            <form method="post" action="{{ url_for('admin_user_balance', user_id=u.id) }}" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input name="amount" placeholder="الرصيد الجديد" style="min-width:120px" inputmode="decimal" required>
+              <select name="currency" style="min-width:90px" title="عملة المبلغ المُدخَل">
+                <option value="USD">$ دولار</option>
+                <option value="SYP">ل.س ليرة</option>
+              </select>
               <button class="btn" type="submit">تعيين</button>
             </form>
           </td>
